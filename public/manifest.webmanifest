@@ -1,0 +1,44 @@
+{
+  "name": "Joldipabo CRM",
+  "short_name": "Joldipabo",
+  "description": "Multi-vertical real estate operations CRM with role-based permissions and offline-capable field-staff workflows.",
+  "start_url": "/",
+  "scope": "/",
+  "id": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#9E3A0C",
+  "background_color": "#FFF8EA",
+  "categories": ["business", "productivity"],
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/joldipabo-logo.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "/joldipabo-logo.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Check in",
+      "short_name": "Check in",
+      "url": "/?action=check-in",
+      "description": "Quickly check in at the current site"
+    },
+    {
+      "name": "Capture site photo",
+      "short_name": "Capture",
+      "url": "/?action=capture-photo",
+      "description": "Upload a site photo immediately"
+    }
+  ],
+  "prefer_related_applications": false
+}

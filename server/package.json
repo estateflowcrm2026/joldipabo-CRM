@@ -1,0 +1,41 @@
+{
+  "name": "estateflow-server",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Joldipabo CRM backend scaffold. Fastify + Postgres. See docs/BACKEND_SCAFFOLD_STATUS.md.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "lint": "node scripts/lint.js",
+    "test": "node --env-file=.env.test --test src/audit/*.test.js src/auth/*.test.js src/config/*.test.js src/rbac/*.test.js src/db/*.test.js src/repositories/*.test.js src/routes/*.test.js",
+    "db:migrate": "node src/db/migrate.js",
+    "db:seed": "node src/db/migrate.js --seed",
+    "db:reset": "node src/db/migrate.js --reset",
+    "verify:migrations": "node scripts/verify-migrations.js",
+    "smoke:listings": "node scripts/smoke-listings.js",
+    "seed:dev-credentials": "node scripts/seed-dev-credentials.js",
+    "smoke:auth": "node --env-file=.env.test scripts/smoke-auth.js",
+    "smoke:auth-db": "node scripts/smoke-auth-db.js",
+    "audit:resign": "node scripts/resign-audit.js",
+    "audit:resign:dry": "node scripts/resign-audit.js --dry-run",
+    "db:ssl-check": "node scripts/check-db-ssl.js",
+    "db:ssl-check:connect": "node scripts/check-db-ssl.js --connect",
+    "db:fetch-ca": "node scripts/fetch-supabase-ca.js",
+    "rls:check": "node scripts/rls-check.js",
+    "test:rls": "node --env-file=.env.test --test src/rls/*.test.js",
+    "db:app-role": "node scripts/app-role.js",
+    "db:app-role:check": "node scripts/app-role.js --check",
+    "verify:cookie-session": "node --env-file=.env scripts/verify-cookie-session.js",
+    "verify:auth-flow": "node --env-file=.env scripts/verify-auth-flow.js",
+    "seed:auth-test-users": "node --env-file=.env scripts/seed-auth-test-users.js"
+  },
+  "dependencies": {
+    "argon2": "^0.45.1",
+    "fastify": "^4.28.1",
+    "pg": "^8.13.1"
+  }
+}

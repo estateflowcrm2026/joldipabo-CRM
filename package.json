@@ -1,0 +1,24 @@
+{
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "demo": "vite --mode demo --host",
+    "demo:build": "vite build --mode demo",
+    "demo:preview": "vite preview --host --port 4173",
+    "smoke:listings": "node scripts/browser-smoke-listings.mjs",
+    "smoke:demo": "node scripts/browser-smoke-demo.mjs",
+    "test": "node src/services/matchListings.test.js && node src/services/offlineQueue.test.mjs && node src/services/demoFlags.test.mjs && node src/services/authSession.test.js && node src/services/listingEnums.test.js && node src/services/listingsLive.test.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

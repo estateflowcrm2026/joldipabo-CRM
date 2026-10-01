@@ -1,0 +1,31 @@
+# Local Postgres for the EstateFlow / Joldipabo CRM backend scaffold.
+#
+# Bring up:   docker compose up -d
+# Tear down:  docker compose down          (keeps the volume)
+# Wipe data:  docker compose down -v       (drops the named volume too)
+#
+# The named volume `estateflow_pg_data` persists rows across restarts,
+# so `npm run db:migrate` + `npm run db:seed` only need to run once.
+# Re-seed against an existing volume is a no-op (seed skips when seeded).
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: estateflow-pg
+    environment:
+      POSTGRES_USER: estateflow
+      POSTGRES_PASSWORD: estateflow
+      POSTGRES_DB: estateflow_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - estateflow_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U estateflow -d estateflow_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  estateflow_pg_data:
+    name: estateflow_pg_data

@@ -1,0 +1,74 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+dist-ssr/
+.vercel/
+*.local
+
+# Environment files — NEVER commit real secrets.
+# `.env.example` templates are tracked deliberately; the concrete
+# files below are not. See docs/ENVIRONMENT.md.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# …except the test fixture, which is tracked on purpose: it holds only
+# throwaway constants, and `npm test` loads it via `--env-file=.env.test`.
+# The `.env.*` rule above ignored it, so a fresh clone had no
+# .env.test and the whole backend test suite failed to load its keys.
+# Add real secrets to a separate untracked file, never to this one.
+!server/.env.test
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Test / coverage output
+coverage/
+.nyc_output/
+*.lcov
+
+# Local database artefacts
+server/pgdata/
+*.dump
+*.backup
+*.sql.gz
+
+# TLS certs and keys — must never be committed
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Downloaded CA bundles. The Supabase root is a public document fetched
+# per environment by `npm run db:fetch-ca`, not a repo artefact — a copy
+# in git goes stale silently when Supabase rotates it, and the failure
+# only shows up as a TLS error at connect time.
+server/certs/
+
+# Sentry / error monitoring upload bundles
+.sentry-cli/
+builds/

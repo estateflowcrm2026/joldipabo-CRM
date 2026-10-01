@@ -1,0 +1,469 @@
+# Continuous integration.
+#
+# The point of this workflow is the database job. Mock-based tests have
+# twice reported green while the database path was broken: the
+# transaction-rollback bug in refresh() and the ON DELETE SET NULL
+# cascade that invalidated every audit signature were both invisible to
+# them, and both are the kind of defect that only a real Postgres
+# produces. `REQUIRE_DB=1` (see src/test-support/requireDb.js) turns the
+# DB-dependent tests from "skipped" into "failed" when no database is
+# reachable, so a green run now means the database was actually exercised.
+#
+# Jobs
+#   static        lint + frontend build, no database, fast
+#   unit          backend tests, no database required (contributor path)
+#   postgres      the same tests WITH a real Postgres, plus the three
+#                 verification scripts. Ephemeral by default.
+#   supabase      the same, against a Supabase branch database, when the
+#                 secrets are configured. Manual + scheduled.
+#
+# Secrets (repository or environment level) — see
+# docs/SUPABASE_VERIFICATION.md §9 for the full table:
+#   SUPABASE_DATABASE_URL            session-pooler URI for the test project
+#   SUPABASE_DIRECT_DATABASE_URL     direct URI, needed for VERIFY_SCOPE=db
+#   SUPABASE_CA_PEM                  the Supabase root CA, base64 or PEM
+#
+# The `postgres` job needs none of them.
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # 03:17 UTC daily. Off-the-hour on purpose: this repository's owners
+    # are in IST, and the top of the hour is when every other scheduled
+    # workflow on the platform runs.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      supabase:
+        description: 'Also run the Supabase branch-database job'
+        type: boolean
+        default: false
+
+# A new push supersedes an in-flight run for the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Fast checks. No database, no secrets.
+  # -------------------------------------------------------------------------
+  static:
+    name: lint + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+
+      - name: Install (frontend)
+        run: npm ci
+
+      - name: Install (server)
+        run: npm ci
+        working-directory: server
+
+      - name: Lint
+        run: npm run lint
+        working-directory: server
+
+      - name: Build
+        run: npm run build
+
+      - name: Check no secrets are tracked
+        run: |
+          # .env must never be committed. .env.test is tracked on purpose
+          # (throwaway constants), and .env.example is a template.
+          if git ls-files --error-unmatch server/.env >/dev/null 2>&1; then
+            echo "::error::server/.env is tracked in git"
+            exit 1
+          fi
+          if git ls-files | grep -E '\.(pem|key|p12|pfx)$' | grep -v '^$'; then
+            echo "::error::a certificate or key is tracked in git"
+            exit 1
+          fi
+          echo "no secrets tracked"
+
+  # -------------------------------------------------------------------------
+  # Unit tests with no database — the contributor path. A database is NOT
+  # required here so a first-time contributor can get a green run.
+  # -------------------------------------------------------------------------
+  unit:
+    name: backend tests (no database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+        working-directory: server
+
+      - name: Tests
+        run: npm test
+        working-directory: server
+        env:
+          # Explicitly absent DATABASE_URL, and REQUIRE_DB deliberately
+          # unset: this job asserts the degraded path still works.
+          REQUIRE_DB: ''
+
+  # -------------------------------------------------------------------------
+  # The same tests against a real Postgres, plus the verification scripts.
+  #
+  # Ephemeral service container: nothing to provision, nothing to leak,
+  # and no chance of pointing it at a shared database by accident.
+  # -------------------------------------------------------------------------
+  postgres:
+    name: tests + verification (real Postgres)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: estateflow
+          POSTGRES_PASSWORD: estateflow
+          POSTGRES_DB: estateflow_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U estateflow -d estateflow_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      NODE_ENV: development
+      DATABASE_URL: postgres://estateflow:estateflow@127.0.0.1:5432/estateflow_ci
+      # Ephemeral container speaks cleartext on loopback; `auto` resolves
+      # to `disable` with no sslmode in the URL.
+      DB_SSL_MODE: disable
+      JWT_SECRET: ci-only-secret-not-used-anywhere-else-000000000000
+      DEV_AUTH_ENABLED: 'true'
+      DEV_AUTH_OFFLINE_FALLBACK: 'false'
+      DEV_AUTH_TENANT_ID: org_acme
+      CORS_ORIGINS: http://localhost:5173
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+        working-directory: server
+
+      # Audit rows are signed with a key derived from JWT_SECRET, so the
+      # check can only be meaningful for rows THIS job wrote. The
+      # timestamp is taken before anything runs.
+      - name: Record the run start
+        run: echo "RUN_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+
+      - name: Report the target (password masked)
+        run: |
+          node --input-type=module -e "
+            const u = new URL(process.env.DATABASE_URL);
+            if (u.password) u.password = '****';
+            console.log('[ci] target', u.toString());
+            if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
+              console.error('::error::the ephemeral job must only target localhost');
+              process.exit(1);
+            }
+            if (process.env.NODE_ENV === 'production') {
+              console.error('::error::CI must never run with NODE_ENV=production');
+              process.exit(1);
+            }
+          "
+
+      - name: Migrate and seed
+        run: |
+          node src/db/migrate.js
+          node src/db/migrate.js --seed
+        working-directory: server
+
+      # Apply the RLS gate before the suite runs, so the tests below see
+      # policies installed AND enabled. syncRlsState reconciles this on
+      # every run, so it works whether or not 010 has been applied yet.
+      - name: Enable RLS in probe mode
+        run: DB_RLS_MODE=probe node src/db/migrate.js
+        working-directory: server
+        env:
+          DB_RLS_MODE: probe
+
+      # The gate. With REQUIRE_DB=1, any DB-dependent test that would skip
+      # fails the job, so a green run cannot mean "the database was never
+      # touched".
+      - name: Tests (REQUIRE_DB=1)
+        run: npm test
+        working-directory: server
+        env:
+          REQUIRE_DB: '1'
+
+      # RLS probe mode. The policies are installed and ENABLE ROW LEVEL
+      # SECURITY is set, and the ENTIRE suite must still pass unchanged.
+      # This is how a policy is proved correct before it is allowed to
+      # deny anything: a test that passes only with RLS off is either a
+      # latent leak or a policy that is too strict, and both are failures.
+      #
+      # It works here because the ephemeral container's role is the table
+      # owner, so the policies are not yet enforced — the run proves the
+      # policies are COMPATIBLE, not that they bite. `npm run rls:check`
+      # proves they bite, by running as a non-owner.
+      - name: Tests with RLS in probe mode
+        run: npm test
+        working-directory: server
+        env:
+          REQUIRE_DB: '1'
+          DB_RLS_MODE: probe
+          # 010 is recorded in the migrate step above; re-applying it is a
+          # no-op, and syncRlsState reconciles the gate on every run.
+          NODE_ENV: development
+
+      - name: Migration verification
+        run: npm run verify:migrations
+        working-directory: server
+        env:
+          VERIFY_ALLOW_REMOTE: '1'
+          VERIFY_SCOPE: db
+
+      - name: Auth smoke against the real database
+        run: npm run smoke:auth-db
+        working-directory: server
+        env:
+          VERIFY_ALLOW_REMOTE: '1'
+
+      # The listings smoke is an HTTP client and needs the server running.
+      # It is started on loopback with a port the runner can reach, and
+      # killed by the shell trap even if the smoke fails.
+      - name: Listings smoke (read + write)
+        run: |
+          set -euo pipefail
+          node src/server.js > /tmp/ci-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill $server_pid 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf -m 2 http://127.0.0.1:4000/health >/dev/null 2>&1; then break; fi
+            if ! kill -0 $server_pid 2>/dev/null; then
+              echo "::error::the server exited during startup"
+              cat /tmp/ci-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl -sf -m 5 http://127.0.0.1:4000/ready || { cat /tmp/ci-server.log; exit 1; }
+          echo
+          node scripts/smoke-listings.js
+          SMOKE_WRITE=1 node scripts/smoke-listings.js
+        working-directory: server
+
+      # Every audit row THIS RUN produced must verify against its own
+      # signature. `--since` scopes the check to what the job wrote: rows
+      # already in the database may have been signed with a different
+      # JWT_SECRET, and flagging those would be a false alarm that makes
+      # the job permanently red. `audit:resign:dry` reports without
+      # changing anything, so a non-zero exit means a real regression.
+      - name: Audit integrity (rows written by this run)
+        run: npm run audit:resign:dry -- --since "$RUN_STARTED_AT"
+        working-directory: server
+
+  # -------------------------------------------------------------------------
+  # Supabase branch database. Runs only when the secrets are configured, so
+  # a repository without them still gets a green run from the jobs above.
+  #
+  # This is the job that exercises the production TLS path — verify-full
+  # against Supabase's private root CA — which the ephemeral container
+  # cannot, since it speaks cleartext.
+  # -------------------------------------------------------------------------
+  supabase:
+    name: tests + verification (Supabase)
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && vars.SUPABASE_CI_ENABLED == 'true') ||
+      (github.event_name == 'pull_request' && vars.SUPABASE_CI_ENABLED == 'true')
+    environment: supabase-ci
+    env:
+      NODE_ENV: development
+      # Localhost from the runner's perspective: the scripts check the
+      # host to decide how destructive they may be, and a CI job must
+      # never be allowed to look like a production target.
+      DB_SSL_MODE: verify-full
+      DB_SSL_REJECT_UNAUTHORIZED: 'true'
+      REQUIRE_DB: '1'
+      VERIFY_ALLOW_REMOTE: '1'
+      VERIFY_SCOPE: schema
+      DEV_AUTH_ENABLED: 'true'
+      DEV_AUTH_OFFLINE_FALLBACK: 'false'
+      DEV_AUTH_TENANT_ID: org_acme
+      CORS_ORIGINS: http://localhost:5173
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+        working-directory: server
+
+      - name: Record the run start
+        run: echo "RUN_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+
+      # Written to a file outside the repository, never uploaded as an
+      # artefact, and the file is deleted once the bundle is installed.
+      - name: Install the Supabase root CA
+        env:
+          SUPABASE_CA_PEM: ${{ secrets.SUPABASE_CA_PEM }}
+        run: |
+          set -euo pipefail
+          install -d -m 0755 /usr/local/share/ca-certificates
+          printf '%s\n' "$SUPABASE_CA_PEM" > /usr/local/share/ca-certificates/supabase-root.crt
+          if grep -q 'BEGIN CERTIFICATE' /usr/local/share/ca-certificates/supabase-root.crt; then
+            echo "::error::SUPABASE_CA_PEM looks like a file path, not the PEM body"
+            echo "  store the certificate text, not its location"
+            exit 1
+          fi
+          echo "DB_SSL_CA_FILE=/usr/local/share/ca-certificates/supabase-root.crt" \
+            >> "$GITHUB_ENV"
+          # Never echoed, never uploaded.
+          rm -f /usr/local/share/ca-certificates/supabase-root.crt
+
+      - name: Report the target (password masked)
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+        run: |
+          node --input-type=module -e "
+            const u = new URL(process.env.DATABASE_URL);
+            const host = u.hostname;
+            if (u.password) u.password = '****';
+            console.log('[ci] target', u.toString());
+            if (!host.endsWith('.supabase.co')) {
+              console.error('::error::refusing to run against a non-Supabase host: ' + host);
+              process.exit(1);
+            }
+            if (!host.startsWith('db.')) {
+              console.error('::error::expected the DIRECT host (db.<ref>.supabase.co) so');
+              console.error('  verify-full can validate the certificate. Got: ' + host);
+              process.exit(1);
+            }
+            if (process.env.NODE_ENV === 'production') {
+              console.error('::error::CI must never run with NODE_ENV=production');
+              process.exit(1);
+            }
+          "
+
+      - name: TLS check
+        run: npm run db:ssl-check:connect
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DIRECT_DATABASE_URL }}
+
+      - name: Migrate and seed
+        run: |
+          node src/db/migrate.js
+          node src/db/migrate.js --seed
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DIRECT_DATABASE_URL }}
+
+      - name: Tests (REQUIRE_DB=1)
+        run: npm test
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DIRECT_DATABASE_URL }}
+
+      # Schema scope, not db scope: the Supabase pooler keeps one backend
+      # per database, so DROP DATABASE can never succeed against it and
+      # scratch databases would be orphaned. See
+      # docs/SUPABASE_VERIFICATION.md §5.
+      - name: Migration verification
+        run: npm run verify:migrations
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          VERIFY_SCOPE: schema
+
+      - name: Auth smoke against the real database
+        run: npm run smoke:auth-db
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DIRECT_DATABASE_URL }}
+
+      - name: Listings smoke (read + write)
+        run: |
+          set -euo pipefail
+          node src/server.js > /tmp/ci-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill $server_pid 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf -m 2 http://127.0.0.1:4000/health >/dev/null 2>&1; then break; fi
+            if ! kill -0 $server_pid 2>/dev/null; then
+              echo "::error::the server exited during startup"; cat /tmp/ci-server.log; exit 1
+            fi
+            sleep 1
+          done
+          echo
+          node scripts/smoke-listings.js
+          SMOKE_WRITE=1 node scripts/smoke-listings.js
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DIRECT_DATABASE_URL }}
+
+      - name: Audit integrity (rows written by this run)
+        run: npm run audit:resign:dry -- --since "$RUN_STARTED_AT"
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DIRECT_DATABASE_URL }}
+
+  # -------------------------------------------------------------------------
+  # Nightly. Surfaces a Supabase root rotation before it becomes an
+  # incident: `db:fetch-ca` is fingerprint-pinned, so a rotated root
+  # fails here rather than in production.
+  # -------------------------------------------------------------------------
+  ca-drift:
+    name: Supabase CA rotation check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+        working-directory: server
+      - name: Verify the pinned CA still matches
+        working-directory: server
+        env:
+          SUPABASE_HOST: ${{ vars.SUPABASE_DIRECT_HOST }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_HOST:-}" ]; then
+            echo "::notice::SUPABASE_DIRECT_HOST is not set; skipping"
+            exit 0
+          fi
+          # --check verifies the fingerprint and writes nothing.
+          node scripts/fetch-supabase-ca.js --host "$SUPABASE_HOST" --check
