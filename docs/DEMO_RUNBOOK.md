@@ -33,7 +33,29 @@ that's what we're prioritising next."*
 
 ---
 
-## 2. Start it on the laptop
+## 2. Hosted demo (preferred)
+
+Import the GitHub repository into Vercel with the repository root as the
+project root. The tracked `vercel.json` builds the seeded demo to `dist`; do
+not add Supabase, JWT, or other server secrets to this frontend project.
+
+Before sharing the link, open the deployed URL on a desktop and a phone.
+Confirm that the **Demo mode** badge and role switcher appear, and that there
+is no sign-in screen. Then run the journey against the actual deployment:
+
+```powershell
+$env:DEMO_URL = 'https://YOUR-VERCEL-URL'
+$env:DEMO_SCREENSHOTS_DIR = Join-Path $env:TEMP 'joldipabo-demo-smoke'
+npm run smoke:demo       # expect 42 passed, 0 failed
+```
+
+Replace the placeholder with the real deployment URL. Keep that URL handy for
+the client and staff; no same-Wi-Fi connection is needed. Anyone with access
+to the preview can use the demo role switcher. All names and records in this
+build are sample data, and changes disappear on reload. Do not enter real
+client or property information into the demo.
+
+## 3. Start it on the laptop (fallback)
 
 From `D:\New Downloads\CRM-RE`:
 
@@ -58,7 +80,7 @@ npm run smoke:demo          # in another — expect "42 passed, 0 failed"
 
 ---
 
-## 3. On the client's phone (optional, 2 minutes)
+## 4. On the client's phone (local fallback)
 
 The demo is a PWA, so the client can hold it in their hand.
 
@@ -86,7 +108,7 @@ The demo is a PWA, so the client can hold it in their hand.
 
 ---
 
-## 4. The five-minute presentation route
+## 5. The five-minute presentation route
 
 This is the recommended order. It tells one story: *capture → enquire →
 visit → field → manage.*
@@ -112,9 +134,10 @@ breath.
 
 ---
 
-## 5. The "client try it" route
+## 6. The "client try it" route
 
-Hand over the laptop (or their phone) with this on screen:
+Hand over the laptop (or their phone) with the hosted Vercel URL on screen.
+If the hosted site is unavailable, use the local fallback:
 
 > **http://localhost:4173**
 
@@ -131,7 +154,7 @@ anything, and nothing is saved.
 
 ---
 
-## 6. Resetting
+## 7. Resetting
 
 **Reset demo** is in the desktop top bar and in the mobile menu (hamburger →
 Demo info). It clears the offline queue and reloads, restoring the seed.
@@ -141,13 +164,12 @@ run `localStorage.clear()` and reload.
 
 ---
 
-## 7. Go / no-go checklist
+## 8. Go / no-go checklist
 
 Run through this **on the presentation machine, on the day**.
 
-- [ ] `npm run demo:build` completed without errors
-- [ ] `npm run demo:preview` is running and http://localhost:4173 loads
-- [ ] `npm run smoke:demo` reports **42 passed, 0 failed**
+- [ ] The hosted Vercel URL loads on laptop and phone (or the local fallback is ready)
+- [ ] `npm run smoke:demo` against the chosen URL reports **42 passed, 0 failed**
 - [ ] Chrome DevTools console is **empty** on the Dashboard
 - [ ] The Joldipabo logo appears top-left on desktop and in the mobile header
 - [ ] The **Demo mode** badge is visible in the top bar
@@ -168,7 +190,7 @@ If the phone route is in play:
 
 ---
 
-## 8. Things not to show
+## 9. Things not to show
 
 | Avoid | Why |
 |---|---|
@@ -186,7 +208,7 @@ something odd, or leaving the app on a filtered view before handing it over.
 
 ---
 
-## 9. If something goes wrong
+## 10. If something goes wrong
 
 | Symptom | Fix |
 |---|---|
@@ -199,7 +221,7 @@ something odd, or leaving the app on a filtered view before handing it over.
 
 ---
 
-## 10. Reference
+## 11. Reference
 
 - Seed data: [`src/data/seed.js`](../src/data/seed.js)
 - Demo flags: [`src/services/demoFlags.js`](../src/services/demoFlags.js), `.env.demo.local`

@@ -14,12 +14,14 @@
 
 import { chromium, devices } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const APP = process.env.DEMO_URL || 'http://localhost:4173';
 const CHROME = process.env.CHROME_PATH
   || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const SHOTS = join(process.cwd(), 'screenshots', 'demo');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const SHOTS = process.env.DEMO_SCREENSHOTS_DIR || join(ROOT, 'screenshots', 'demo');
 
 let passed = 0;
 let failed = 0;
@@ -186,7 +188,7 @@ await section('desktop: field check-in and photo (mobile preview)', async () => 
   await page.locator('button, a').filter({ hasText: 'Capture & upload site photo' }).first().click();
   await page.waitForTimeout(500);
   const before = await page.locator('.mobile-photo-grid figure').count();
-  await page.locator('.upload-zone input[type=file]').setInputFiles('public/estate-hero.png');
+  await page.locator('.upload-zone input[type=file]').setInputFiles(join(ROOT, 'public', 'estate-hero.png'));
   await page.waitForTimeout(200);
   await page.locator('.mobile-upload button').last().click();
   await page.waitForTimeout(700);
