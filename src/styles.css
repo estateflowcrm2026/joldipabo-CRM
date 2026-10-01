@@ -928,6 +928,10 @@ h4 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 .dashboard-list li > div { display: flex; flex-direction: column; line-height: 1.3; }
 .dashboard-list li > div strong { font-size: 0.9rem; }
 .dashboard-list li > div span { color: var(--muted); font-size: 0.78rem; }
+.dashboard-visit-list li {
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+}
+.dashboard-visit-list li > div { min-width: 0; }
 .dashboard-list-time {
   font-weight: 800;
   font-size: 0.78rem;

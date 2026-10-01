@@ -285,7 +285,7 @@ export function Dashboard() {
               description="Once staff book visits, they'll appear here with full context."
             />
           ) : (
-            <ul className="dashboard-list">
+            <ul className="dashboard-list dashboard-visit-list">
               {todaysVisits.slice(0, 5).map((visit) => {
                 const lead = state.leads.find((l) => l.id === visit.leadId);
                 const project = state.projects.find((p) => p.id === visit.projectId);

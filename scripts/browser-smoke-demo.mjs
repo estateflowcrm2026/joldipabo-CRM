@@ -79,6 +79,13 @@ await section('desktop: loads with no sign-in and no console errors', async () =
   assert('the role switcher is present', (await page.locator('.role-switcher-trigger').count()) > 0);
   assert('a "Reset demo" control is present', (await page.getByRole('button', { name: /Reset demo/i }).count()) > 0);
   assert('no horizontal overflow', (await overflowOf(page)) <= 0);
+  const visitRow = page.locator('.dashboard-visit-list li').first();
+  if (await visitRow.count()) {
+    const time = await visitRow.locator('.dashboard-list-time').boundingBox();
+    const lead = await visitRow.locator('div').first().boundingBox();
+    assert('visit time and lead name do not overlap', time.x + time.width <= lead.x,
+      `time right ${time.x + time.width}, lead left ${lead.x}`);
+  }
   await page.screenshot({ path: join(SHOTS, 'dash-desktop.png') });
 
   desktopPage = page;

@@ -46,7 +46,7 @@ is no sign-in screen. Then run the journey against the actual deployment:
 ```powershell
 $env:DEMO_URL = 'https://YOUR-VERCEL-URL'
 $env:DEMO_SCREENSHOTS_DIR = Join-Path $env:TEMP 'joldipabo-demo-smoke'
-npm run smoke:demo       # expect 42 passed, 0 failed
+npm run smoke:demo       # expect 43 passed, 0 failed
 ```
 
 Replace the placeholder with the real deployment URL. Keep that URL handy for
@@ -71,11 +71,11 @@ Then open **http://localhost:4173** in Chrome.
 > appear on screen.
 
 **Before the meeting, run the smoke test.** It drives the whole journey and
-fails on any console error, blank screen or layout overflow:
+fails on any console error, blank screen, layout overflow or visit-row overlap:
 
 ```bash
 npm run demo:preview        # in one terminal
-npm run smoke:demo          # in another — expect "42 passed, 0 failed"
+npm run smoke:demo          # in another — expect "43 passed, 0 failed"
 ```
 
 ---
@@ -169,7 +169,7 @@ run `localStorage.clear()` and reload.
 Run through this **on the presentation machine, on the day**.
 
 - [ ] The hosted Vercel URL loads on laptop and phone (or the local fallback is ready)
-- [ ] `npm run smoke:demo` against the chosen URL reports **42 passed, 0 failed**
+- [ ] `npm run smoke:demo` against the chosen URL reports **43 passed, 0 failed**
 - [ ] Chrome DevTools console is **empty** on the Dashboard
 - [ ] The Joldipabo logo appears top-left on desktop and in the mobile header
 - [ ] The **Demo mode** badge is visible in the top bar
