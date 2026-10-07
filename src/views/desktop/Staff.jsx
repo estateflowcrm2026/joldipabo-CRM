@@ -29,6 +29,7 @@ import { Can } from '../../components/Can.jsx';
 import { isApiRepositoryActive } from '../../services/index.js';
 import { staffApi } from '../../services/staffApi.js';
 import { useAssignableStaff } from '../../services/staffDirectory.js';
+import { useTeamsDirectory } from '../../services/teamsProjectsDirectory.js';
 
 function apiMessage(error) {
   return error?.data?.error?.message || error?.message || 'The request could not be completed.';
@@ -46,9 +47,17 @@ export function Staff() {
   // Live mode reads the backend directory; demo mode keeps the seed roster.
   const live = isApiRepositoryActive();
   const directory = useAssignableStaff();
+  const teamsDir = useTeamsDirectory();
   const liveStaff = useMemo(
     () => (live && directory.source === 'live' ? directory.staff : null),
     [live, directory],
+  );
+  // Team names resolve through the live teams directory in live mode and
+  // the seed roster in demo mode. On a failed live load the directory is
+  // [] and names fall back to the DTO's teamName, never to seed.
+  const teamOptions = useMemo(
+    () => (live ? teamsDir.items : state.teams || []),
+    [live, teamsDir.items, state.teams],
   );
 
   const users = useMemo(
@@ -103,12 +112,16 @@ export function Staff() {
           </Select>
           <Select value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
             <option value="all">All teams</option>
-            {state.teams ? (
-              state.teams.map((team) => (
+            {live && teamsDir.loading ? (
+              <option value="" disabled>Loading teams…</option>
+            ) : teamOptions.length > 0 ? (
+              teamOptions.map((team) => (
                 <option key={team.id} value={team.id}>
                   {team.name}
                 </option>
               ))
+            ) : live ? (
+              <option value="" disabled>No teams visible</option>
             ) : (
               <option value="team-east">East Zone Sales</option>
             )}
@@ -136,8 +149,10 @@ export function Staff() {
         ) : (
           <div className="staff-grid">
             {filtered.map((user) => {
-              const team = (state.teams || []).find((t) => t.id === user.teamId);
-              const projects = state.projects.filter((p) => user.projectIds?.includes(p.id));
+              const team = teamOptions.find((t) => t.id === user.teamId);
+              const projects = live
+                ? []
+                : state.projects.filter((p) => user.projectIds?.includes(p.id));
               const isActive = user.status === 'Active';
               return (
                 <article className="staff-card" key={user.id}>
@@ -163,7 +178,9 @@ export function Staff() {
                     <li><span>Joined</span><strong>{formatDate(user.joinedAt)}</strong></li>
                     <li>
                       <span>Projects</span>
-                      <strong>{projects.length === 0 ? 'None' : projects.map((p) => p.code).join(', ')}</strong>
+                      {/* The staff DTO carries no project ids in live mode,
+                          so "None" would be a lie — show unknown instead. */}
+                      <strong>{live ? '—' : projects.length === 0 ? 'None' : projects.map((p) => p.code).join(', ')}</strong>
                     </li>
                   </ul>
                   <footer>
@@ -351,7 +368,8 @@ function CreateStaffModal({ onClose }) {
 // The password is sent once, hashed server-side, and never shown again —
 // the success state is a confirmation naming the account, not the secret.
 function CreateStaffLiveModal({ onClose, onCreated }) {
-  const { actions, roleDefinitions, state } = useStore();
+  const { actions, roleDefinitions } = useStore();
+  const teamsDir = useTeamsDirectory();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -436,14 +454,25 @@ function CreateStaffLiveModal({ onClose, onCreated }) {
           </Select>
         </Field>
         <Field label="Team" span={2} hint="Optional. Must be a team in your organisation.">
-          <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
-            <option value="">No team</option>
-            {(state.teams || []).map((team) => (
-              <option key={team.id} value={team.id}>
-                {team.name}
-              </option>
-            ))}
-          </Select>
+          {teamsDir.loading ? (
+            <p className="muted">Loading teams…</p>
+          ) : teamsDir.source === 'unavailable' ? (
+            <p className="muted">
+              {teamsDir.reason}{' '}
+              <button type="button" className="link" onClick={teamsDir.retry}>
+                Retry
+              </button>
+            </p>
+          ) : (
+            <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+              <option value="">No team</option>
+              {teamsDir.items.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name}
+                </option>
+              ))}
+            </Select>
+          )}
         </Field>
         <Field
           label="Initial password"

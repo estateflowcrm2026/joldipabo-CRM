@@ -36,6 +36,7 @@ import { isApiRepositoryActive } from '../../services/index.js';
 import { ContactWorkspace } from '../ContactWorkspace.jsx';
 import { LiveVisits } from '../LiveVisits.jsx';
 import { useAssignableStaff } from '../../services/staffDirectory.js';
+import { useProjectsDirectory } from '../../services/teamsProjectsDirectory.js';
 import { listingFromCapture } from '../../services/listingCapture.js';
 import { rankLeadMatches } from '../../services/matchListings.js';
 import {
@@ -1080,9 +1081,9 @@ function MobileListingSheet({ listing, directory, onClose }) {
 }
 
 function NewListingSheet({ onClose }) {
-  const { state, currentUser, actions, online } = useStore();
+  const { currentUser, actions, online } = useStore();
   const { createListing } = useListings();
-  const staffDir = useAssignableStaff();
+  const projectDir = useProjectsDirectory();
   const [ownerName, setOwnerName] = useState('');
   const [ownerPhone, setOwnerPhone] = useState('');
   const [locality, setLocality] = useState('');
@@ -1130,9 +1131,10 @@ function NewListingSheet({ onClose }) {
       askingPrice,
       notes,
       userId: currentUser.id,
-      // Seed project ids do not exist in the backend, so only attach a
-      // project when the seed directory is the active source (demo mode).
-      projectId: staffDir.source === 'seed' ? state.projects[0]?.id || null : null,
+      // Attach the first visible project: the seed roster in demo mode, the
+      // live projects directory in live mode (a real backend id). When the
+      // directory is still loading or unavailable, attach nothing.
+      projectId: projectDir.items[0]?.id || null,
     });
 
     setSaving(true);

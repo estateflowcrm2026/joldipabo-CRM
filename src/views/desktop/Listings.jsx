@@ -40,6 +40,7 @@ import { useStore } from '../../state/store.jsx';
 import { can, RESOURCES } from '../../data/permissions.js';
 import { useListings, resolveAssignee } from '../../services/listingsData.jsx';
 import { useAssignableStaff } from '../../services/staffDirectory.js';
+import { useProjectsDirectory } from '../../services/teamsProjectsDirectory.js';
 import {
   Avatar,
   Badge,
@@ -580,6 +581,7 @@ export function Listings() {
           listing={selected}
           canAssign={canAssign}
           directory={assignStaff.staff}
+          projectName={selected.project?.name || null}
           onClose={() => setSelected(null)}
           onAssign={() => {
             setAssigning(selected);
@@ -703,11 +705,16 @@ function ListingCard({ listing, assignee, canAssign, onOpen, onAssign }) {
 
 // ---------- Drawer ----------
 
-function ListingDrawer({ listing, canAssign, directory, onClose, onAssign, onVerify, onEdit }) {
+function ListingDrawer({ listing, canAssign, directory, projectName, onClose, onAssign, onVerify, onEdit }) {
   const { state } = useStore();
   const assignee = resolveAssignee(listing, state.users, directory);
   const creator = state.users.find((u) => u.id === listing.createdBy);
-  const project = state.projects.find((p) => p.id === listing.projectId);
+  // Project name prefers the backend's own display name (carried on the
+  // listing DTO) over a seed lookup, so live mode never shows a blank or a
+  // same-id seed project's name.
+  const project = projectName
+    ? { name: projectName }
+    : state.projects.find((p) => p.id === listing.projectId);
   const verifier = state.users.find((u) => u.id === listing.status?.verifiedBy);
 
   const { pricing, specs, location, ownerContact } = listing;
@@ -1017,10 +1024,11 @@ function NewListingModal({ onClose }) {
   const { actions, state, currentUser } = useStore();
   const { createListing, mutating } = useListings();
   const staffDir = useAssignableStaff();
-  // Projects still come from the seed roster, which does not exist in the
-  // backend — so the project picker stays demo-only. The assignee picker
-  // draws from the live staff directory (staffDir) in live mode.
-  const projectPickerAvailable = staffDir.source === 'seed';
+  const projectDir = useProjectsDirectory();
+  // The project picker draws from the live projects directory in live mode
+  // and the seed roster in demo mode. The assignee picker draws from the
+  // live staff directory (staffDir) in live mode.
+  const projectPickerAvailable = projectDir.available;
 
   // Owner
   const [ownerName, setOwnerName] = useState('');
@@ -1059,7 +1067,7 @@ function NewListingModal({ onClose }) {
   // Assignment
   const [assignedTo, setAssignedTo] = useState(currentUser.id);
   const [projectId, setProjectId] = useState(
-    projectPickerAvailable ? state.projects[0]?.id || '' : ''
+    projectDir.source === 'seed' ? state.projects[0]?.id || '' : ''
   );
 
   // Auto-derive listingIntent from category when the user changes category.
@@ -1290,11 +1298,20 @@ function NewListingModal({ onClose }) {
 
       <SectionTitle title="Assignment" />
       <div className="grid-2">
-        {projectPickerAvailable ? (
+        {projectDir.loading ? (
+          <p className="muted">Loading projects…</p>
+        ) : projectDir.source === 'unavailable' ? (
+          <p className="muted">
+            {projectDir.reason}{' '}
+            <button type="button" className="link" onClick={projectDir.retry}>
+              Retry
+            </button>
+          </p>
+        ) : projectPickerAvailable ? (
           <Field label="Project">
             <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
               <option value="">— None —</option>
-              {state.projects.map((p) => (
+              {projectDir.items.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -1303,8 +1320,8 @@ function NewListingModal({ onClose }) {
           </Field>
         ) : (
           <p className="muted">
-            No project picker in live mode yet — the backend has no project
-            directory endpoint. The listing will be created without a project.
+            {projectDir.reason || 'No projects are visible to you.'}{' '}
+            The listing will be created without a project.
           </p>
         )}
         {staffDir.loading ? (

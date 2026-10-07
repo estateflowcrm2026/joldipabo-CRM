@@ -31,7 +31,8 @@ table — no migration was required, and 012/013/014 were left untouched.
 - Response: `{ items: [{ id, name, email, phone, role, roleName, teamId,
   teamName, status, designation }], pagination: { limit, offset, total } }`,
   ordered by name. `teamName`/`roleName` come from JOINs to the `teams`
-  and `roles` tables — there is still no teams endpoint (see gaps).
+  and `roles` tables — see `docs/TEAMS_PROJECTS_DIRECTORY.md` for the live
+  teams/projects endpoints.
 - The DTO never carries secrets: no `password_hash`, `mfa_secret`,
   invite/reset tokens, or `permission_matrix`. The SELECT list names its
   columns explicitly so a future secret column cannot leak by `SELECT *`.
@@ -93,8 +94,8 @@ never seed.
 
 Wired pickers (live mode):
 - Desktop + mobile listing assignment (assign/reassign modals and sheets)
-- Desktop new-listing assignee picker (the project picker stays
-  demo-only — seed project ids do not exist in the backend)
+- Desktop new-listing assignee picker (the project picker is now live too —
+  see `docs/TEAMS_PROJECTS_DIRECTORY.md`)
 - Assignee display names resolve through the directory first
   (`resolveAssignee` takes the directory as a third argument), so a live
   listing shows the real name rather than a same-id seed user
@@ -113,7 +114,7 @@ Already live before this change (no work needed):
 | Manual staff creation (`POST /users`) | Real — `staff:create`, Argon2id hash, no email; response is `{ id, email, status }` |
 | Admin password reset (`POST /users/:id/reset-password`) | Real — `staff:edit`, clears lockout, revokes sessions, tenant 404 for foreign rows |
 | `GET /api/v1/users/:id`, `PATCH/DELETE /users`, `POST /users/:id/restore` | Not implemented — still `NotImplemented`, per the auth spec's phase plan |
-| `GET /api/v1/teams` | Still `{ items: [], placeholder: true }` — the directory takes `teamId` as a free filter and resolves `teamName` via JOIN |
+| `GET /api/v1/teams` | Real — tenant-scoped, `staff:view`-filtered, `q` search (see `docs/TEAMS_PROJECTS_DIRECTORY.md`); the directory takes `teamId` as a free filter and resolves `teamName` via JOIN |
 | Phone visibility | Gap — phone is included for every viewer that passes the `staff:view` gate. There is no field-level grant in the matrix to key off, so a phone-hiding rule would be invented policy |
 | Test accounts | Dev-only script `server/scripts/seed-staff-test-users.js` (manager + 2 executives on different teams + telecaller; `DEMO_PASSWORD` from the environment, localhost + demo-tenant guards, idempotent). Never run against a shared database |
 
