@@ -92,8 +92,39 @@ export function clearAuthToken() {
 }
 
 // ---------------------------------------------------------------------------
-// Errors
+// Credentials mode
 // ---------------------------------------------------------------------------
+
+/**
+ * Default `fetch` credentials mode for the configured base URL.
+ *
+ * Same-origin (including same-origin dev) keeps `'same-origin'`: cookies
+ * for the API origin are sent, cross-origin cookies are not. When the
+ * configured API origin differs from the page origin — the Vercel
+ * frontend + Render backend pilot — the default becomes `'include'` so
+ * cookie-authenticated endpoints (login sets the pair, refresh/logout
+ * present the refresh cookie) work without every caller remembering to
+ * opt in.
+ *
+ * An explicit `options.credentials` always wins, so the session endpoints
+ * that already pass `credentials: 'include'` are unaffected, and Bearer
+ * handling elsewhere is unchanged.
+ *
+ * @param {string} baseUrl
+ * @returns {'same-origin'|'include'}
+ */
+export function defaultCredentials(baseUrl) {
+  try {
+    const loc = typeof window !== 'undefined' ? window.location : null;
+    if (loc && loc.origin && loc.href) {
+      if (new URL(baseUrl, loc.href).origin !== loc.origin) return 'include';
+    }
+  } catch {
+    // An unparseable base URL (or no window, e.g. node tests) keeps the
+    // conservative default rather than failing the request.
+  }
+  return 'same-origin';
+}
 
 /**
  * Error thrown by `apiRequest` when the server responds with a non-2xx
@@ -162,13 +193,15 @@ export async function apiRequest(path, options = {}) {
       headers,
       body: hasBody ? JSON.stringify(options.body) : undefined,
       signal: options.signal,
-      // `credentials: 'include'` attaches the HttpOnly session cookie.
-      // Needed because the frontend and API are different origins in
-      // development (localhost:5173 vs localhost:4000), and a
-      // cross-origin fetch defaults to omitting credentials — which
-      // would present as "the session cookie does not exist" rather
-      // than as a CORS problem.
-      credentials: options.credentials ?? 'same-origin',
+      // Cookie mode: explicit `options.credentials` wins. Otherwise the
+      // default follows the configured base URL — `'same-origin'` when the
+      // API is same-origin with the page, `'include'` when it is
+      // cross-origin (the Vercel + Render pilot) so the HttpOnly session
+      // cookie is attached and `Set-Cookie` on login is accepted. A
+      // cross-origin fetch without credentials fails as "no session
+      // cookie" rather than as a CORS problem, which is why the default
+      // — not each caller — owns this.
+      credentials: options.credentials ?? defaultCredentials(baseUrl),
     });
   } catch (err) {
     // Network / DNS / CORS / abort. Treat all as ApiError so callers have

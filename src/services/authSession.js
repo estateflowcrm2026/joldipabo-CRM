@@ -399,6 +399,7 @@ export async function loadIdentity() {
 export function resetSessionForTests() {
   session = null;
   inFlight = null;
+  csrfToken = null;
   clearAuthToken();
   emit();
 }

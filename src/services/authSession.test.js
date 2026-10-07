@@ -87,7 +87,12 @@ globalThis.fetch = async (url, init = {}) => {
   const path = String(url).replace(/^https?:\/\/[^/]+/, '');
   const method = (init.method || 'GET').toUpperCase();
   const key = `${method} ${path.split('?')[0]}`;
-  calls.push({ key, body: init.body ? JSON.parse(init.body) : undefined });
+  calls.push({
+    key,
+    body: init.body ? JSON.parse(init.body) : undefined,
+    credentials: init.credentials,
+    headers: init.headers || {},
+  });
 
   const entry = stubs.get(key);
   if (!entry) return jsonResponse(404, { error: { code: 'not-stubbed', message: `no stub for ${key}` } });
@@ -105,6 +110,17 @@ const storageDump = (name) => {
 };
 
 const countCalls = (key) => calls.filter((c) => c.key === key).length;
+const lastCall = (key) => calls.filter((c) => c.key === key).at(-1);
+
+// A stubbed `document.cookie` carrying the CSRF pair, so the CSRF-echo
+// assertions below exercise the real `readCsrfToken()` path instead of
+// the no-document early return.
+function stubCsrfCookie(token = 'csrf-abc-123') {
+  globalThis.document = { cookie: `jrp_csrf=${encodeURIComponent(token)}` };
+}
+function clearDocumentStub() {
+  delete globalThis.document;
+}
 
 function reset() {
   resetSessionForTests();
@@ -339,6 +355,67 @@ console.log('\nsign-out: revoke, and clear locally regardless');
   reset();
   const out = await signOut();
   assert('signing out with no session is a no-op', out.revoked === false && isSignedIn() === false);
+}
+
+// ---------------------------------------------------------------------------
+// 4b. Cookie mode on the wire: credentials + CSRF header
+// ---------------------------------------------------------------------------
+
+console.log('\ncookie mode: session endpoints send the cookie cross-site');
+{
+  reset();
+  stubCsrfCookie('csrf-abc-123');
+  stubFetch({
+    'POST /api/v1/auth/login': LOGIN_OK,
+    'POST /api/v1/auth/mfa/challenge': {
+      status: 200,
+      body: { accessToken: 'a2', expiresIn: 900, user: MFA_USER },
+    },
+    'POST /api/v1/auth/refresh': {
+      status: 200,
+      body: { accessToken: 'a3', expiresIn: 900, user: USER },
+    },
+    'POST /api/v1/auth/logout': { status: 200, body: { revoked: true } },
+  });
+
+  await signIn({ email: USER.email, password: 'x' });
+  assert(
+    'login sends credentials: include so Set-Cookie is accepted',
+    lastCall('POST /api/v1/auth/login')?.credentials === 'include',
+    String(lastCall('POST /api/v1/auth/login')?.credentials),
+  );
+
+  const mfa = await completeMfa({ challengeToken: 'c', code: '123456' });
+  assert('mfa challenge authenticates', mfa.status === 'authenticated');
+  assert(
+    'mfa challenge sends credentials: include',
+    lastCall('POST /api/v1/auth/mfa/challenge')?.credentials === 'include',
+    String(lastCall('POST /api/v1/auth/mfa/challenge')?.credentials),
+  );
+
+  assert('refresh succeeds', (await refreshSession()) === true);
+  const refreshCall = lastCall('POST /api/v1/auth/refresh');
+  assert(
+    'refresh sends credentials: include so the cookie is attached',
+    refreshCall?.credentials === 'include',
+    String(refreshCall?.credentials),
+  );
+  assert(
+    'refresh echoes the CSRF cookie as a header',
+    refreshCall?.headers?.['x-csrf-token'] === 'csrf-abc-123',
+    JSON.stringify(refreshCall?.headers),
+  );
+
+  const out = await signOut();
+  assert('logout revokes', out.revoked === true);
+  const logoutCall = lastCall('POST /api/v1/auth/logout');
+  assert(
+    'logout sends credentials: include so the server can clear the pair',
+    logoutCall?.credentials === 'include',
+    String(logoutCall?.credentials),
+  );
+
+  clearDocumentStub();
 }
 
 // ---------------------------------------------------------------------------

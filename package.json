@@ -9,7 +9,7 @@
     "demo:preview": "vite preview --host --port 4173",
     "smoke:listings": "node scripts/browser-smoke-listings.mjs",
     "smoke:demo": "node scripts/browser-smoke-demo.mjs",
-    "test": "node src/services/matchListings.test.js && node src/services/offlineQueue.test.mjs && node src/services/demoFlags.test.mjs && node src/services/authSession.test.js && node src/services/listingEnums.test.js && node src/services/listingsLive.test.mjs && node src/services/contactIntakeApi.test.mjs && node src/services/visitsApi.test.mjs && node src/services/staffApi.test.mjs && node src/services/teamsProjectsApi.test.mjs && node src/services/agentPerformanceApi.test.mjs && node src/services/leadTimelineApi.test.mjs && node src/services/leadMatchesApi.test.mjs"
+    "test": "node src/services/matchListings.test.js && node src/services/offlineQueue.test.mjs && node src/services/demoFlags.test.mjs && node src/services/authSession.test.js && node src/services/apiClient.test.mjs && node src/services/listingEnums.test.js && node src/services/listingsLive.test.mjs && node src/services/contactIntakeApi.test.mjs && node src/services/visitsApi.test.mjs && node src/services/staffApi.test.mjs && node src/services/teamsProjectsApi.test.mjs && node src/services/agentPerformanceApi.test.mjs && node src/services/leadTimelineApi.test.mjs && node src/services/leadMatchesApi.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
