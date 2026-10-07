@@ -618,3 +618,238 @@ test('GET /api/v1/leads/:id/timeline (dev-field) out-of-scope → 404', async (t
 test.after(async () => {
   await closeDb();
 });
+
+// ---------------------------------------------------------------------------
+// 3. Matches endpoints: GET / POST / PATCH /leads/:id/matches[…]
+// ---------------------------------------------------------------------------
+// Auth + RBAC + validation run with no DB. DB-integration round-trips
+// (refresh → list → patch → list) run only when DATABASE_URL is set and
+// write synthetic lm_verify_* rows, cleaned up afterwards.
+
+test('GET /api/v1/leads/:id/matches without auth returns 401', async () => {
+  const app = await newApp();
+  const res = await app.inject({ method: 'GET', url: '/api/v1/leads/ld_tenant_meera/matches' });
+  assert.equal(res.statusCode, 401);
+  await app.close();
+});
+
+test('POST /api/v1/leads/:id/matches without auth returns 401', async () => {
+  const app = await newApp();
+  const res = await app.inject({ method: 'POST', url: '/api/v1/leads/ld_tenant_meera/matches', payload: {} });
+  assert.equal(res.statusCode, 401);
+  await app.close();
+});
+
+test('PATCH /api/v1/leads/:id/matches/:listingId without auth returns 401', async () => {
+  const app = await newApp();
+  const res = await app.inject({
+    method: 'PATCH',
+    url: '/api/v1/leads/ld_tenant_meera/matches/l_rent_indiranagar_3bhk',
+    payload: { status: 'viewed_by_lead' },
+  });
+  assert.equal(res.statusCode, 401);
+  await app.close();
+});
+
+test('GET /api/v1/leads/:id/matches with placeholder auth reaches RBAC gate', async () => {
+  const app = await newApp();
+  const res = await app.inject({
+    method: 'GET',
+    url: '/api/v1/leads/ld_tenant_meera/matches',
+    headers: { authorization: bearer() },
+  });
+  if (dbConfigured) {
+    // u-asha owns ld_tenant_meera → 200 (seed row lm_001 is hers to see).
+    assert.equal(res.statusCode, 200);
+  } else {
+    assert.equal(res.statusCode, 403);
+  }
+  await app.close();
+});
+
+test('POST /api/v1/leads/:id/matches with placeholder auth reaches RBAC gate', async () => {
+  const app = await newApp();
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/v1/leads/ld_tenant_meera/matches',
+    headers: { authorization: bearer() },
+    payload: {},
+  });
+  if (dbConfigured) {
+    // Placeholder resolves u-asha; leads:edit own on her own lead → 201.
+    assert.equal(res.statusCode, 201);
+  } else {
+    assert.equal(res.statusCode, 403);
+  }
+  await app.close();
+});
+
+test('PATCH /api/v1/leads/:id/matches/:listingId rejects unknown status → 400', async () => {
+  // Validation fires before the DB read, so this needs no database.
+  process.env.DEV_AUTH_ENABLED = 'true';
+  process.env.DEV_AUTH_OFFLINE_FALLBACK = 'true';
+  try {
+    const app = await newApp();
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/leads/ld_tenant_meera/matches/l_rent_indiranagar_3bhk',
+      headers: { authorization: 'Bearer dev-super' },
+      payload: { status: 'matched' },
+    });
+    if (dbConfigured) {
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.json().error.code, 'invalid-status');
+    } else {
+      // No DB: dev-super offline matrix grants, then the repository hits
+      // the not-configured pool → 503, never a 400. Accept either the
+      // validator's 400 or the pool's 503; both prove the gate passed.
+      assert.ok([400, 503].includes(res.statusCode), `got ${res.statusCode}`);
+    }
+    await app.close();
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+    delete process.env.DEV_AUTH_OFFLINE_FALLBACK;
+  }
+});
+
+test('POST /api/v1/leads/:id/matches rejects bad topN → 400', async () => {
+  process.env.DEV_AUTH_ENABLED = 'true';
+  process.env.DEV_AUTH_OFFLINE_FALLBACK = 'true';
+  try {
+    const app = await newApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/leads/ld_tenant_meera/matches',
+      headers: { authorization: 'Bearer dev-super' },
+      payload: { topN: 99 },
+    });
+    if (dbConfigured) {
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.json().error.code, 'invalid-topN');
+    } else {
+      assert.ok([400, 503].includes(res.statusCode), `got ${res.statusCode}`);
+    }
+    await app.close();
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+    delete process.env.DEV_AUTH_OFFLINE_FALLBACK;
+  }
+});
+
+test('matches round-trip (dev-super, DB set): refresh → list → patch → list → 200s', async (t) => {
+  if (skipIfNoDb(t)) return;
+  process.env.DEV_AUTH_ENABLED = 'true';
+  try {
+    const app = await newApp();
+    const auth = { authorization: 'Bearer dev-super' };
+
+    // Refresh recomputes from the seed: ld_tenant_meera (rent 45–75k,
+    // Indiranagar | Koramangala) should at least re-suggest the
+    // Indiranagar 3BHK at 65k.
+    const refreshed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/leads/ld_tenant_meera/matches',
+      headers: auth,
+      payload: {},
+    });
+    assert.equal(refreshed.statusCode, 201);
+    const rBody = refreshed.json();
+    assert.equal(rBody.leadId, 'ld_tenant_meera');
+    assert.ok(Array.isArray(rBody.items) && rBody.items.length > 0);
+    assert.ok(
+      rBody.items.some((i) => i.listingId === 'l_rent_indiranagar_3bhk'),
+      'expected the Indiranagar 3BHK to re-rank for Meera',
+    );
+    for (const item of rBody.items) {
+      assert.ok(item.id && item.listingId && item.listing);
+      assert.ok(typeof item.score === 'number' && typeof item.reason === 'string');
+    }
+
+    // List returns the same saved rows, score-desc.
+    const listed = await app.inject({
+      method: 'GET',
+      url: '/api/v1/leads/ld_tenant_meera/matches',
+      headers: auth,
+    });
+    assert.equal(listed.statusCode, 200);
+    assert.equal(listed.json().leadId, 'ld_tenant_meera');
+    assert.ok(listed.json().items.length >= 1);
+
+    // Patch one row's status + note.
+    const patched = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/leads/ld_tenant_meera/matches/l_rent_indiranagar_3bhk',
+      headers: auth,
+      payload: { status: 'viewed_by_lead', note: 'verify round-trip' },
+    });
+    assert.equal(patched.statusCode, 200);
+    assert.equal(patched.json().status, 'viewed_by_lead');
+    assert.equal(patched.json().note, 'verify round-trip');
+
+    // A second refresh must preserve the human-set status.
+    const refreshed2 = await app.inject({
+      method: 'POST',
+      url: '/api/v1/leads/ld_tenant_meera/matches',
+      headers: auth,
+      payload: {},
+    });
+    assert.equal(refreshed2.statusCode, 201);
+    const kept = refreshed2.json().items.find((i) => i.listingId === 'l_rent_indiranagar_3bhk');
+    assert.ok(kept, 'expected the Indiranagar row to survive refresh');
+    assert.equal(kept.status, 'viewed_by_lead');
+
+    // Restore the seed state: lm_001 was viewed_by_lead with no note, so
+    // reset the note and leave the status as seeded.
+    const restored = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/leads/ld_tenant_meera/matches/l_rent_indiranagar_3bhk',
+      headers: auth,
+      payload: { note: null },
+    });
+    assert.equal(restored.statusCode, 200);
+    assert.equal(restored.json().note, null);
+    await app.close();
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+  }
+});
+
+test('GET /api/v1/leads/:id/matches (dev-field) out-of-scope → 404', async (t) => {
+  // ld_buyer_sandeep is owned by u-vijay (t_south). dev-field (u-asha,
+  // t_north, own scope) cannot see it → 404, same as GET /leads/:id.
+  if (skipIfNoDb(t)) return;
+  process.env.DEV_AUTH_ENABLED = 'true';
+  try {
+    const app = await newApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/leads/ld_buyer_sandeep/matches',
+      headers: { authorization: 'Bearer dev-field' },
+    });
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.json().error.code, 'not-found');
+    await app.close();
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+  }
+});
+
+test('PATCH /api/v1/leads/:id/matches/:listingId unknown pair → 404', async (t) => {
+  // No saved row for (ld_tenant_meera, l_pg_koramangala_bed) in the seed.
+  if (skipIfNoDb(t)) return;
+  process.env.DEV_AUTH_ENABLED = 'true';
+  try {
+    const app = await newApp();
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/leads/ld_tenant_meera/matches/l_pg_koramangala_bed',
+      headers: { authorization: 'Bearer dev-super' },
+      payload: { status: 'withdrawn' },
+    });
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.json().error.code, 'not-found');
+    await app.close();
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+  }
+});

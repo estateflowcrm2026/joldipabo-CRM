@@ -4,6 +4,8 @@ import {
 } from 'lucide-react';
 import { contactIntakeApi } from '../services/contactIntakeApi.js';
 import { leadTimelineApi } from '../services/leadTimelineApi.js';
+import { leadMatchesApi } from '../services/leadMatchesApi.js';
+import { visitsApi } from '../services/visitsApi.js';
 import {
   Badge, Button, EmptyState, Field, LoadingState, Modal, Select, TextInput,
   buildTelLink, buildWhatsAppLink, formatDateTime,
@@ -464,9 +466,164 @@ function LeadDetail({ id, onSaved, onOpenContact }) {
         <Button type="submit" disabled={busy}>{busy ? 'Saving' : 'Save changes'}</Button>
       </form>
       {lead.contactId && <button className="contact-history-link" onClick={() => onOpenContact(lead.contactId)}><Clock3 size={14} /> View call history</button>}
+      <LeadMatches leadId={id} />
       <LeadTimeline leadId={id} onOpenContact={onOpenContact} />
     </>
   );
+}
+
+const MATCH_STATUSES = [
+  ['suggested', 'Suggested'],
+  ['viewed_by_lead', 'Viewed by lead'],
+  ['visit_scheduled', 'Visit scheduled'],
+  ['rejected_by_lead', 'Rejected by lead'],
+  ['withdrawn', 'Withdrawn'],
+];
+
+function formatMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return `₹${amount.toLocaleString('en-IN')}`;
+}
+
+function matchPrice(match) {
+  const listing = match.listing || {};
+  if (listing.rentMonthly != null) {
+    const monthly = formatMoney(listing.rentMonthly);
+    return monthly ? `${monthly}/mo` : null;
+  }
+  return formatMoney(listing.price);
+}
+
+// Live saved matches for one lead: list → refresh (recalculate) →
+// per-row status/note update → schedule a visit from a row.
+//
+// A refresh recomputes scores server-side and upserts `suggested` rows;
+// rows a human already touched (viewed / visit scheduled / rejected /
+// withdrawn) keep their status and only refresh the score. Scheduling a
+// visit POSTs /visits with this lead + the row's listing, then marks the
+// row visit_scheduled so the two stay consistent.
+function LeadMatches({ leadId }) {
+  const [state, setState] = useState({ status: 'loading', items: [], error: null });
+  const [revision, setRevision] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [schedulingId, setSchedulingId] = useState(null);
+  const [scheduleForm, setScheduleForm] = useState({ assignedTo: '', scheduledAt: '', notes: '' });
+  const [agents, setAgents] = useState([]);
+  const [actionError, setActionError] = useState(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ status: 'loading', items: [], error: null });
+    leadMatchesApi.list(leadId, controller.signal)
+      .then((result) => { if (!controller.signal.aborted) setState({ status: 'ready', items: result.items || [], error: null }); })
+      .catch((error) => { if (!controller.signal.aborted) setState({ status: 'error', items: [], error }); });
+    return () => controller.abort();
+  }, [leadId, revision]);
+  const reload = () => setRevision((value) => value + 1);
+  const refresh = async () => {
+    setRefreshing(true); setActionError(null);
+    try {
+      const result = await leadMatchesApi.refresh(leadId);
+      setState({ status: 'ready', items: result.items || [], error: null });
+    } catch (error) { setActionError(error); }
+    setRefreshing(false);
+  };
+  const setStatus = async (match, status) => {
+    setActionError(null);
+    try {
+      const updated = await leadMatchesApi.update(leadId, match.listingId, { status });
+      setState((prev) => ({ ...prev, items: prev.items.map((row) => (row.listingId === match.listingId ? updated : row)) }));
+    } catch (error) { setActionError(error); }
+  };
+  const startScheduling = async (match) => {
+    setSchedulingId(match.listingId); setActionError(null);
+    setScheduleForm({ assignedTo: '', scheduledAt: localDateTime(new Date(Date.now() + 86400000)), notes: '' });
+    try {
+      const data = await visitsApi.assignees();
+      setAgents(data.items || []);
+    } catch (error) { setActionError(error); }
+  };
+  const submitSchedule = async (event, match) => {
+    event.preventDefault(); setActionError(null);
+    try {
+      await visitsApi.create({
+        leadId,
+        assignedTo: scheduleForm.assignedTo,
+        scheduledAt: new Date(scheduleForm.scheduledAt).toISOString(),
+        listingId: match.listingId,
+        notes: scheduleForm.notes || null,
+      });
+      const updated = await leadMatchesApi.update(leadId, match.listingId, { status: 'visit_scheduled' });
+      setState((prev) => ({ ...prev, items: prev.items.map((row) => (row.listingId === match.listingId ? updated : row)) }));
+      setSchedulingId(null);
+    } catch (error) { setActionError(error); }
+  };
+  return <section className="contact-visit-history" aria-label="Matched properties">
+    <div className="contact-history-heading">
+      <h4>Matched properties</h4>
+      <span>{state.status === 'ready' ? `${state.items.length} saved` : ''}</span>
+    </div>
+    {state.status === 'loading' && <LoadingState label="Loading matches" />}
+    {state.status === 'error' && (
+      <div className="contact-request-error" role="alert">
+        <p>{message(state.error)}</p><Button variant="secondary" size="sm" onClick={reload}>Retry</Button>
+      </div>
+    )}
+    {state.status === 'ready' && (
+      <>
+        <div className="contact-detail-actions">
+          <Button variant="secondary" size="sm" disabled={refreshing} onClick={refresh}>{refreshing ? 'Recalculating' : 'Recalculate matches'}</Button>
+        </div>
+        {actionError && <p className="contact-request-error" role="alert">{message(actionError)}</p>}
+        {state.items.length === 0 && <p className="contact-muted">No saved matches yet. Recalculate to score the available listings for this lead.</p>}
+        {state.items.length > 0 && (
+          <ol className="contact-timeline-list">
+            {state.items.map((match) => {
+              const listing = match.listing || {};
+              const location = [listing.locality, listing.city].filter(Boolean).join(', ');
+              const price = matchPrice(match);
+              const scheduling = schedulingId === match.listingId;
+              return <li key={match.id} className="contact-timeline-item contact-timeline-viewing">
+                <div className="contact-timeline-row">
+                  <Badge tone={match.status === 'suggested' ? 'info' : 'neutral'} size="sm">
+                    {MATCH_STATUSES.find(([value]) => value === match.status)?.[1] || match.status}
+                  </Badge>
+                  <small>score {match.score}</small>
+                </div>
+                <strong>{listing.title || match.listingId}</strong>
+                {(location || price) && <p>{[location, price].filter(Boolean).join(' · ')}</p>}
+                {match.reason && <small>{match.reason}</small>}
+                {match.note && <p>Note: {match.note}</p>}
+                <div className="contact-detail-actions">
+                  <Select value={match.status} onChange={(event) => setStatus(match, event.target.value)} aria-label={`Match status for ${listing.title || match.listingId}`}>
+                    {MATCH_STATUSES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </Select>
+                  {!scheduling && <Button variant="secondary" size="sm" onClick={() => startScheduling(match)}>Schedule visit</Button>}
+                </div>
+                {scheduling && (
+                  <form className="contact-lead-form" onSubmit={(event) => submitSchedule(event, match)}>
+                    <Field label="Field executive" required>
+                      <Select value={scheduleForm.assignedTo} onChange={(event) => setScheduleForm((prev) => ({ ...prev, assignedTo: event.target.value }))} required>
+                        <option value="">Select executive</option>{agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.name}</option>)}
+                      </Select>
+                    </Field>
+                    <Field label="Date and time" required>
+                      <TextInput type="datetime-local" value={scheduleForm.scheduledAt} onChange={(event) => setScheduleForm((prev) => ({ ...prev, scheduledAt: event.target.value }))} required />
+                    </Field>
+                    <Field label="Instructions"><textarea rows={2} maxLength={4000} value={scheduleForm.notes} onChange={(event) => setScheduleForm((prev) => ({ ...prev, notes: event.target.value }))} /></Field>
+                    <div className="contact-detail-actions">
+                      <Button variant="ghost" size="sm" onClick={() => setSchedulingId(null)}>Cancel</Button>
+                      <Button type="submit" size="sm" disabled={!scheduleForm.assignedTo || !scheduleForm.scheduledAt}>Schedule visit</Button>
+                    </div>
+                  </form>
+                )}
+              </li>;
+            })}
+          </ol>
+        )}
+      </>
+    )}
+  </section>;
 }
 
 const TIMELINE_LABELS = {

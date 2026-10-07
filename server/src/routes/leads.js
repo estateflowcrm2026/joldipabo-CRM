@@ -36,6 +36,13 @@ import {
   validateUpdateLead,
 } from '../repositories/leadsRepository.js';
 import { getLeadTimeline } from '../repositories/leadTimelineRepository.js';
+import {
+  listMatches,
+  refreshMatches,
+  updateMatch,
+  validateMatchUpdate,
+  validateRefreshOptions,
+} from '../repositories/leadMatchesRepository.js';
 import { validateFollowUpFilters } from '../repositories/followUpValidation.js';
 import { DB_NOT_CONFIGURED } from '../db/client.js';
 
@@ -110,6 +117,63 @@ export default async function leadRoutes(fastify) {
         throw new NotFound('not-found', 'Lead not found.');
       }
       return getLeadTimeline(req.user, dto);
+    },
+  );
+
+  // GET /leads/:id/matches — saved matches for one lead, score-desc.
+  //
+  // Same scope contract as /timeline: the lead itself is scope-checked
+  // exactly like GET /leads/:id (out-of-scope → 404, never 403), and
+  // out-of-scope listings are skipped silently inside the list by the
+  // repository — never leaked as 404s.
+  fastify.get(
+    '/leads/:id/matches',
+    { preHandler: [...auth, requirePermission('leads', 'view')] },
+    async (req) => {
+      const leadId = (req.params && req.params.id) || null;
+      if (!leadId) throw new BadRequest('invalid-id', 'Lead id is required.');
+      return listMatches(req.user, leadId);
+    },
+  );
+
+  // POST /leads/:id/matches — recompute matches for one lead.
+  //
+  // Deterministic, no ML: scores every scope-visible available listing
+  // with leadMatchScorer, keeps the top `topN` at/above `minScore`, and
+  // upserts them as `suggested` rows (human-set statuses keep their
+  // status; only the stored score refreshes). Requires `leads:edit` on
+  // the lead — a refresh writes rows — plus `listings:view` per
+  // candidate. Out-of-scope lead → 404, same as PATCH /leads/:id.
+  fastify.post(
+    '/leads/:id/matches',
+    { preHandler: [...auth, requirePermission('leads', 'edit')] },
+    async (req, reply) => {
+      const leadId = (req.params && req.params.id) || null;
+      if (!leadId) throw new BadRequest('invalid-id', 'Lead id is required.');
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const { topN, minScore } = validateRefreshOptions({ ...req.query, ...body });
+      const result = await refreshMatches({ user: req.user, leadId, topN, minScore, req });
+      return reply.code(201).send(result);
+    },
+  );
+
+  // PATCH /leads/:id/matches/:listingId — set one match's status/note.
+  //
+  // Same gates as the refresh: `leads:edit` on the lead (route gate +
+  // row can()) and `listings:view` on the listing. Unknown pair or
+  // out-of-scope listing → 404, never 403, so match existence is not
+  // leaked.
+  fastify.patch(
+    '/leads/:id/matches/:listingId',
+    { preHandler: [...auth, requirePermission('leads', 'edit')] },
+    async (req) => {
+      const leadId = (req.params && req.params.id) || null;
+      if (!leadId) throw new BadRequest('invalid-id', 'Lead id is required.');
+      const listingId = (req.params && req.params.listingId) || null;
+      if (!listingId) throw new BadRequest('invalid-id', 'Listing id is required.');
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const changes = validateMatchUpdate(body);
+      return updateMatch({ user: req.user, leadId, listingId, changes, req });
     },
   );
 
