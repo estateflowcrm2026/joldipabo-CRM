@@ -315,19 +315,29 @@ export function useListings() {
  * embedded name means a live listing shows the real assignee ("Demo Super")
  * rather than a same-id seed user or "Unassigned".
  *
+ * `directory` is the optional live staff list (from useAssignableStaff):
+ * the backend does not always embed the name (e.g. freshly created rows in
+ * some flows), and the seed roster must never be consulted in live mode —
+ * a same-id seed user is a stranger with the wrong name. When neither the
+ * embedded name nor the directory knows the id, the raw id is shown rather
+ * than "Unassigned" — the listing IS assigned, just to someone outside the
+ * caller's visible directory.
+ *
  * @param {object|null} listing
  * @param {object[]} [users]  the local roster (seed) for demo lookups
+ * @param {object[]} [directory]  the live staff list for live lookups
  * @returns {{ id: string, name: string, email: string|null }|null}
  */
-export function resolveAssignee(listing, users) {
+export function resolveAssignee(listing, users, directory) {
   if (!listing) return null;
   const assigned = listing.assignedTo;
   const id = typeof assigned === 'string' ? assigned : assigned?.id ?? null;
   if (!id) return null;
+  const known = directory?.find((u) => u.id === id) || null;
   const local = users?.find((u) => u.id === id) || null;
   return {
     id,
-    name: listing.assignedToName || local?.name || id,
-    email: local?.email ?? null,
+    name: listing.assignedToName || known?.name || local?.name || id,
+    email: known?.email ?? local?.email ?? null,
   };
 }

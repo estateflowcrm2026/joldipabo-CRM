@@ -31,7 +31,17 @@
     "db:app-role:check": "node scripts/app-role.js --check",
     "verify:cookie-session": "node --env-file=.env scripts/verify-cookie-session.js",
     "verify:auth-flow": "node --env-file=.env scripts/verify-auth-flow.js",
-    "seed:auth-test-users": "node --env-file=.env scripts/seed-auth-test-users.js"
+    "verify:contact-intake": "node --env-file=.env scripts/verify-contact-intake.js",
+    "smoke:contact-browser": "node --env-file=.env scripts/browser-smoke-contact.js",
+    "verify:visits": "node --env-file=.env scripts/verify-visits.js",
+    "verify:timeline": "node --env-file=.env scripts/verify-lead-timeline.js",
+    "verify:followups": "node --env-file=.env scripts/verify-followups.js",
+    "verify:agent-performance": "node --env-file=.env scripts/verify-agent-performance.js",
+    "smoke:visits-browser": "node --env-file=.env scripts/browser-smoke-visits.js",
+    "smoke:followups-browser": "node --env-file=.env scripts/browser-smoke-followups.js",
+    "seed:auth-test-users": "node --env-file=.env scripts/seed-auth-test-users.js",
+    "seed:staff-test-users": "node --env-file=.env scripts/seed-staff-test-users.js",
+    "verify:staff": "node --env-file=.env scripts/verify-staff.js"
   },
   "dependencies": {
     "argon2": "^0.45.1",

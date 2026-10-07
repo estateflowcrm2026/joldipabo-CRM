@@ -540,6 +540,81 @@ test('GET /api/v1/leads/:id/export.csv returns 501 not-implemented', async (t) =
   }
 });
 
+test('GET /api/v1/leads/:id/timeline without auth returns 401', async () => {
+  const app = await newApp();
+  const res = await app.inject({ method: 'GET', url: '/api/v1/leads/ld_tenant_meera/timeline' });
+  assert.equal(res.statusCode, 401);
+  await app.close();
+});
+
+test('GET /api/v1/leads/:id/timeline with placeholder auth reaches RBAC gate', async () => {
+  const app = await newApp();
+  const res = await app.inject({
+    method: 'GET',
+    url: '/api/v1/leads/ld_tenant_meera/timeline',
+    headers: { authorization: bearer() },
+  });
+  if (dbConfigured) {
+    // u-asha owns ld_tenant_meera → 200.
+    assert.equal(res.statusCode, 200);
+  } else {
+    assert.equal(res.statusCode, 403);
+  }
+  await app.close();
+});
+
+test('GET /api/v1/leads/:id/timeline (dev-super, DB set) returns chronological items → 200', async (t) => {
+  if (skipIfNoDb(t)) return;
+  process.env.DEV_AUTH_ENABLED = 'true';
+  try {
+    const app = await newApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/leads/ld_tenant_meera/timeline',
+      headers: { authorization: 'Bearer dev-super' },
+    });
+    const body = res.json();
+    assert.equal(res.statusCode, 200);
+    assert.equal(body.leadId, 'ld_tenant_meera');
+    assert.ok(Array.isArray(body.items));
+    // At minimum the lead_created anchor is always present.
+    assert.ok(body.items.some((item) => item.type === 'lead_created'));
+    for (const item of body.items) {
+      assert.ok(item.id && item.type && item.occurredAt && item.title);
+    }
+    for (let i = 1; i < body.items.length; i += 1) {
+      assert.ok(
+        body.items[i].occurredAt >= body.items[i - 1].occurredAt,
+        'timeline items must be oldest-first',
+      );
+    }
+    await app.close();
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+  }
+});
+
+test('GET /api/v1/leads/:id/timeline (dev-field) out-of-scope → 404', async (t) => {
+  // ld_buyer_sandeep is owned by u-vijay (t_south). dev-field (u-asha,
+  // t_north, own scope) cannot see it → existence hidden with 404, same
+  // as GET /leads/:id.
+  if (skipIfNoDb(t)) return;
+  process.env.DEV_AUTH_ENABLED = 'true';
+  try {
+    const app = await newApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/leads/ld_buyer_sandeep/timeline',
+      headers: { authorization: 'Bearer dev-field' },
+    });
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.json().error.code, 'not-found');
+    await app.close();
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+  }
+});
+
 test.after(async () => {
   await closeDb();
 });

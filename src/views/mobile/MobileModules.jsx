@@ -32,6 +32,9 @@ import {
 import { useStore } from '../../state/store.jsx';
 import { filterByScope, can } from '../../data/permissions.js';
 import { useListings, resolveAssignee } from '../../services/listingsData.jsx';
+import { isApiRepositoryActive } from '../../services/index.js';
+import { ContactWorkspace } from '../ContactWorkspace.jsx';
+import { LiveVisits } from '../LiveVisits.jsx';
 import { useAssignableStaff } from '../../services/staffDirectory.js';
 import { listingFromCapture } from '../../services/listingCapture.js';
 import { rankLeadMatches } from '../../services/matchListings.js';
@@ -67,6 +70,11 @@ const CATEGORIES = ['Progress', 'Amenities', 'Inventory', 'Handover', 'Marketing
 // ----------------- Mobile Visits -----------------
 
 export function MobileVisits() {
+  if (isApiRepositoryActive()) return <LiveVisits mobile />;
+  return <DemoMobileVisits />;
+}
+
+function DemoMobileVisits() {
   const { state, currentUser, actions, online } = useStore();
   const { listings: apiListings } = useListings();
   const visits = useMemo(
@@ -195,6 +203,11 @@ export function MobileVisits() {
 // ----------------- Mobile Leads -----------------
 
 export function MobileLeads() {
+  if (isApiRepositoryActive()) return <ContactWorkspace mobile />;
+  return <DemoMobileLeads />;
+}
+
+function DemoMobileLeads() {
   const { state, currentUser, actions } = useStore();
   const leads = useMemo(
     () => filterByScope(currentUser, 'leads', 'view', state.leads),
@@ -652,6 +665,7 @@ const formatListingPrice = (listing) => {
 export function MobileListings() {
   const { state, currentUser, actions, online } = useStore();
   const { listings: apiListings, status, error, retry } = useListings();
+  const staffDir = useAssignableStaff();
   const listings = useMemo(
     () => filterByScope(currentUser, 'listings', 'view', apiListings),
     [currentUser, apiListings]
@@ -751,7 +765,7 @@ export function MobileListings() {
       ) : (
         <ul className="mobile-listing-list">
           {filtered.map((listing) => {
-            const assignee = resolveAssignee(listing, state.users);
+            const assignee = resolveAssignee(listing, state.users, staffDir.staff);
             return (
               <li key={listing.id}>
                 <button className="mobile-listing" onClick={() => setOpenId(listing.id)}>
@@ -794,18 +808,18 @@ export function MobileListings() {
         </ul>
       )}
 
-      {open && <MobileListingSheet listing={open} onClose={() => setOpenId(null)} />}
+      {open && <MobileListingSheet listing={open} directory={staffDir.staff} onClose={() => setOpenId(null)} />}
 
       {capturing && <NewListingSheet onClose={() => setCapturing(false)} />}
     </div>
   );
 }
 
-function MobileListingSheet({ listing, onClose }) {
+function MobileListingSheet({ listing, directory, onClose }) {
   const { state, actions, currentUser } = useStore();
   const { assignListing, removeListing } = useListings();
   const staffDir = useAssignableStaff();
-  const assignee = resolveAssignee(listing, state.users);
+  const assignee = resolveAssignee(listing, state.users, directory ?? staffDir.staff);
   const verifier = state.users.find((u) => u.id === listing.status?.verifiedBy);
   const mapsHref = listing.location?.geo
     ? `https://maps.google.com/?q=${listing.location.geo.lat},${listing.location.geo.lng}`
@@ -983,7 +997,9 @@ function MobileListingSheet({ listing, onClose }) {
       )}
 
       <div className="mobile-listing-actions">
-        {staffDir.available ? (
+        {staffDir.loading ? (
+          <p className="muted mobile-assign-unavailable">Loading staff directory…</p>
+        ) : staffDir.available ? (
           <>
             <Can resource="listings" action="assign" record={listing}>
               {assignOpen ? (
@@ -1037,7 +1053,14 @@ function MobileListingSheet({ listing, onClose }) {
           </>
         ) : (
           <Can resource="listings" action="assign" record={listing}>
-            <p className="muted mobile-assign-unavailable">{staffDir.reason}</p>
+            <p className="muted mobile-assign-unavailable">
+              {staffDir.reason}{' '}
+              {staffDir.source === 'unavailable' && (
+                <button type="button" className="btn-link" onClick={staffDir.retry}>
+                  Retry
+                </button>
+              )}
+            </p>
           </Can>
         )}
         <Can resource="listings" action="delete" record={listing}>
@@ -1109,7 +1132,7 @@ function NewListingSheet({ onClose }) {
       userId: currentUser.id,
       // Seed project ids do not exist in the backend, so only attach a
       // project when the seed directory is the active source (demo mode).
-      projectId: staffDir.available ? state.projects[0]?.id || null : null,
+      projectId: staffDir.source === 'seed' ? state.projects[0]?.id || null : null,
     });
 
     setSaving(true);

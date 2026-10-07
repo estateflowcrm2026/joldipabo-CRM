@@ -176,7 +176,7 @@ export const DEFAULT_PERMISSION_MATRIX = Object.freeze({
     staff:           { view: 'own', create: 'none', edit: 'own', assign: 'none', approve: 'none', export: 'none', delete: 'none' },
     roles:           { view: 'none', create: 'none', edit: 'none', assign: 'none', approve: 'none', export: 'none', delete: 'none' },
     attendance:      { view: 'own', create: 'own', edit: 'own', assign: 'none', approve: 'none', export: 'own', delete: 'none' },
-    visits:          { view: 'own', create: 'own', edit: 'own', assign: 'none', approve: 'none', export: 'own', delete: 'none' },
+    visits:          { view: 'team', create: 'team', edit: 'team', assign: 'team', approve: 'none', export: 'team', delete: 'none' },
     photos:          { view: 'none', create: 'none', edit: 'none', assign: 'none', approve: 'none', export: 'none', delete: 'none' },
     communications:  { view: 'own', create: 'own', edit: 'own', assign: 'none', approve: 'none', export: 'own', delete: 'none' },
     reports:         { view: 'own', create: 'none', edit: 'none', assign: 'none', approve: 'none', export: 'own', delete: 'none' },
@@ -237,6 +237,7 @@ export function scopeOf(user, resource, action) {
 // matrix row's `own` scope and the in-memory `can()` agree.
 const RECORD_OWN_FIELD = Object.freeze({
   listings: 'assignedTo',
+  visits: 'assignedTo',
 });
 
 function recordOwnField(resource) {

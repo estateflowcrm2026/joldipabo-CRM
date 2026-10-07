@@ -31,6 +31,7 @@ import { RESOURCES, SCOPES, scopeOf } from './permissions.js';
 // move for any new resource whose ownership semantics differ.
 const OWN_COLUMN = Object.freeze({
   [RESOURCES.LISTINGS]: 'assigned_to',
+  [RESOURCES.VISITS]: 'assigned_to',
   // Default: every other resource uses `owner_id`.
 });
 

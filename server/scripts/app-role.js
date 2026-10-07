@@ -82,10 +82,10 @@ const ROLE = process.env.DB_APP_ROLE || 'estateflow_app';
  */
 const APP_TABLES = [
   // RLS-protected — the four from migration 010
-  'listings', 'leads', 'visits', 'listing_photos',
+  'listings', 'leads', 'visits', 'listing_photos', 'contacts', 'contact_calls',
   // Application tables with no policy yet; the app still needs them
   'users', 'teams', 'branches', 'projects', 'attendance',
-  'listing_matches', 'listing_documents', 'photos',
+  'listing_matches', 'listing_documents',
   'messages', 'threads', 'export_jobs',
   'otp_codes', 'mfa_challenges', 'mfa_backup_codes',
   'password_reset_tokens', 'audit_log',
@@ -202,6 +202,9 @@ async function create(db) {
   const names = APP_TABLES.map(q).join(', ');
   await db.query(`GRANT ${DML} ON ${names} TO ${qi(ROLE)}`);
   console.log(`[app-role] GRANT ${DML} on ${APP_TABLES.length} tables`);
+  await db.query(`REVOKE ALL ON photos FROM ${qi(ROLE)}`);
+  await db.query(`REVOKE DELETE ON contacts FROM ${qi(ROLE)}`);
+  await db.query(`REVOKE UPDATE, DELETE ON contact_calls FROM ${qi(ROLE)}`);
 
   // Sequences: no SERIAL/BIGSERIAL columns exist today, so this is
   // harmless now and prevents a confusing failure if one is added.
@@ -248,6 +251,17 @@ async function check(db) {
     missing.length === 0,
     missing.length ? `missing: ${missing.join(', ')}` : '',
   );
+  check('has NO access to deprecated photos', !granted.includes('photos'));
+
+  const mutableIntake = await db.query(
+    `SELECT table_name, privilege_type FROM information_schema.role_table_grants
+      WHERE grantee = $1 AND (
+        (table_name = 'contacts' AND privilege_type = 'DELETE') OR
+        (table_name = 'contact_calls' AND privilege_type IN ('UPDATE', 'DELETE'))
+      )`,
+    [ROLE],
+  );
+  check('cannot rewrite or delete intake history', mutableIntake.rows.length === 0);
 
   // The dangerous grants, checked explicitly rather than assumed absent.
   const ddl = await db.query(

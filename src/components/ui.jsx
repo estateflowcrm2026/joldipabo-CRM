@@ -206,7 +206,7 @@ export function Modal({ open, onClose, title, children, footer, width = 560 }) {
 
   if (!open) return null;
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={title} onClick={onClose}>
       <div
         className="modal"
         style={{ maxWidth: width }}

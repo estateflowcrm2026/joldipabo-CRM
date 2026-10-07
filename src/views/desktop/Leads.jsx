@@ -20,6 +20,8 @@ import {
 import { useStore } from '../../state/store.jsx';
 import { filterByScope, can } from '../../data/permissions.js';
 import { useListings } from '../../services/listingsData.jsx';
+import { isApiRepositoryActive } from '../../services/index.js';
+import { ContactWorkspace } from '../ContactWorkspace.jsx';
 import {
   Avatar,
   Badge,
@@ -56,6 +58,11 @@ const STATUS_OPTIONS = [
 const SOURCE_OPTIONS = ['Website', 'Referral', 'Channel Partner', 'Walk-in', 'Meta Ads', 'Direct'];
 
 export function Leads() {
+  if (isApiRepositoryActive()) return <ContactWorkspace />;
+  return <DemoLeads />;
+}
+
+function DemoLeads() {
   const { state, currentUser } = useStore();
   const leads = useMemo(
     () => filterByScope(currentUser, 'leads', 'view', state.leads),

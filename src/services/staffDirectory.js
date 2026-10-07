@@ -3,29 +3,25 @@
 // WHY THIS EXISTS
 // ---------------
 // Both the desktop "Assign listing" picker and the mobile reassign control
-// need a list of people a listing can be assigned to. Until now that list
-// came straight from `state.users`, which is the seeded demo roster — and
-// `state.users` is populated with seed data EVEN IN LIVE MODE. Showing it
-// in a live build means offering the operator a dropdown of strangers whose
-// ids do not exist in the backend, so every "Assign" would 404.
+// need a list of people a listing can be assigned to. That list must never
+// come from `state.users` in live mode: the store's roster is seeded demo
+// data, and its ids do not exist in the backend, so every "Assign" would
+// 404.
 //
-// A live build must draw assignees from the backend. The backend has no
-// implemented staff-list endpoint yet:
-//
-//   GET /api/v1/users  → { items: [], placeholder: true }   (server/src/routes/users.js)
-//   GET /api/v1/teams  → { items: [], placeholder: true }
-//
-// So today there is NO backend source. Rather than silently show seed
-// strangers, live mode withholds the assignment control entirely and
-// reports the dependency (see the `reason` field). When a real staff
-// endpoint lands, this hook is the one place that learns about it.
+// In live mode the source is GET /api/v1/users (see staffApi.js), which the
+// backend tenant-scopes and scope-filters by the caller's `staff:view`
+// grant. The hook fetches once per mount with loading / error / retry
+// state, following the listingsData.jsx pattern: on error the staff list is
+// [] — never seed — and the pickers surface the failure with a retry
+// affordance.
 //
 // Demo mode keeps working exactly as before: the seeded roster is the
 // source, and the pickers render.
 
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../state/store.jsx';
 import { isApiRepositoryActive } from './index.js';
+import { staffApi } from './staffApi.js';
 
 /**
  * Roles that may own a listing. Mirrors the roles that appear in the demo
@@ -45,34 +41,105 @@ export const ASSIGNABLE_ROLES = Object.freeze([
 /**
  * The eligible-assignee source.
  *
+ * Demo mode: the seeded roster, filtered to assignable roles. Status
+ * 'ready', no error.
+ *
+ * Live mode: fetched from GET /api/v1/users (limit 100, the largest page
+ * the directory offers — assignment pickers need the whole visible roster,
+ * not a paginated slice). Status cycles 'loading' → 'ready' | 'error'. On
+ * error the staff list is [] — never seed — and `retry` re-issues the
+ * request. `available` is true only when there is at least one person to
+ * offer; an empty directory and a failed load both withhold the picker,
+ * with `reason` saying which.
+ *
  * @returns {{
- *   staff: object[],        — eligible people, or [] when unavailable
- *   available: boolean,     — whether assignment can be offered at all
- *   source: 'seed'|'unavailable',
- *   reason: string|null,    — why it is unavailable, for the UI to surface
+ *   staff: object[],
+ *   available: boolean,
+ *   loading: boolean,
+ *   source: 'seed'|'live'|'unavailable',
+ *   reason: string|null,
+ *   error: Error|null,
+ *   retry: () => void,
  * }}
  */
 export function useAssignableStaff() {
   const { state } = useStore();
   const live = isApiRepositoryActive();
+  const [directory, setDirectory] = useState({ staff: [], status: 'loading', error: null });
+  const requestIdRef = useRef(0);
+
+  const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    setDirectory((prev) => ({ ...prev, status: 'loading', error: null }));
+    try {
+      const result = await staffApi.list({ limit: 100 });
+      if (requestId !== requestIdRef.current) return;
+      setDirectory({ staff: result.items || [], status: 'ready', error: null });
+    } catch (err) {
+      if (requestId !== requestIdRef.current) return;
+      setDirectory({ staff: [], status: 'error', error: err });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!live) return undefined;
+    load();
+    return undefined;
+  }, [live, load]);
 
   return useMemo(() => {
-    if (live) {
+    if (!live) {
+      return {
+        staff: (state.users || []).filter((u) => ASSIGNABLE_ROLES.includes(u.role)),
+        available: true,
+        loading: false,
+        source: 'seed',
+        reason: null,
+        error: null,
+        retry: () => {},
+      };
+    }
+    if (directory.status === 'loading') {
       return {
         staff: [],
         available: false,
+        loading: true,
+        source: 'live',
+        reason: null,
+        error: null,
+        retry: load,
+      };
+    }
+    if (directory.status === 'error') {
+      return {
+        staff: [],
+        available: false,
+        loading: false,
         source: 'unavailable',
-        reason:
-          'The backend has no staff directory endpoint yet, so a listing ' +
-          'cannot be assigned to a real person from here. Assignment is ' +
-          'withheld in live mode rather than offering seeded demo users.',
+        reason: 'Could not load the staff directory. Check the connection and try again.',
+        error: directory.error,
+        retry: load,
+      };
+    }
+    if (directory.staff.length === 0) {
+      return {
+        staff: [],
+        available: false,
+        loading: false,
+        source: 'live',
+        reason: 'No active staff are visible to you, so there is nobody to assign to.',
+        error: null,
+        retry: load,
       };
     }
     return {
-      staff: (state.users || []).filter((u) => ASSIGNABLE_ROLES.includes(u.role)),
+      staff: directory.staff,
       available: true,
-      source: 'seed',
+      loading: false,
+      source: 'live',
       reason: null,
+      error: null,
+      retry: load,
     };
-  }, [live, state.users]);
+  }, [live, state.users, directory, load]);
 }

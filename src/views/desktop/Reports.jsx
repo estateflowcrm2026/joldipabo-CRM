@@ -24,6 +24,8 @@ import {
 } from '../../components/ui.jsx';
 import { BarList, Donut, PipelineFunnel } from '../../components/Sparkline.jsx';
 import { Can } from '../../components/Can.jsx';
+import { isApiRepositoryActive } from '../../services/index.js';
+import { AgentPerformance } from '../AgentPerformance.jsx';
 
 export function Reports() {
   const { state, currentUser } = useStore();
@@ -192,6 +194,8 @@ export function Reports() {
           )}
         </Panel>
       </section>
+
+      {isApiRepositoryActive() && <AgentPerformance />}
 
       <Panel title="Attendance Punctuality" subtitle="On-time vs late check-ins" icon={CheckCircle2}>
         {attendance.length === 0 ? (

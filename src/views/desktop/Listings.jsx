@@ -182,9 +182,10 @@ export function Listings() {
     removeListing,
   } = useListings();
   const assignStaff = useAssignableStaff();
-  // Assignment needs a source of eligible people. In live mode the backend
-  // has no staff endpoint yet, so the control is withheld rather than
-  // offering seeded demo users (see staffDirectory.js).
+  // Assignment needs a source of eligible people. In live mode that is the
+  // staff directory (GET /api/v1/users); `available` is false while it loads
+  // or when it fails, so the control is withheld rather than offering
+  // seeded demo users (see staffDirectory.js).
   const canAssign = assignStaff.available;
   const visible = listings;
   const hasAnyViewScope = can(currentUser, RESOURCES.LISTINGS, 'view');
@@ -490,7 +491,7 @@ export function Listings() {
               <span />
             </div>
             {filtered.map((listing) => {
-              const assignee = resolveAssignee(listing, state.users);
+              const assignee = resolveAssignee(listing, state.users, assignStaff.staff);
               return (
                 <div
                   key={listing.id}
@@ -564,7 +565,7 @@ export function Listings() {
               <ListingCard
                 key={listing.id}
                 listing={listing}
-                assignee={resolveAssignee(listing, state.users)}
+                assignee={resolveAssignee(listing, state.users, assignStaff.staff)}
                 canAssign={canAssign}
                 onOpen={() => setSelected(listing)}
                 onAssign={() => setAssigning(listing)}
@@ -578,6 +579,7 @@ export function Listings() {
         <ListingDrawer
           listing={selected}
           canAssign={canAssign}
+          directory={assignStaff.staff}
           onClose={() => setSelected(null)}
           onAssign={() => {
             setAssigning(selected);
@@ -701,9 +703,9 @@ function ListingCard({ listing, assignee, canAssign, onOpen, onAssign }) {
 
 // ---------- Drawer ----------
 
-function ListingDrawer({ listing, canAssign, onClose, onAssign, onVerify, onEdit }) {
+function ListingDrawer({ listing, canAssign, directory, onClose, onAssign, onVerify, onEdit }) {
   const { state } = useStore();
-  const assignee = resolveAssignee(listing, state.users);
+  const assignee = resolveAssignee(listing, state.users, directory);
   const creator = state.users.find((u) => u.id === listing.createdBy);
   const project = state.projects.find((p) => p.id === listing.projectId);
   const verifier = state.users.find((u) => u.id === listing.status?.verifiedBy);
@@ -1015,11 +1017,10 @@ function NewListingModal({ onClose }) {
   const { actions, state, currentUser } = useStore();
   const { createListing, mutating } = useListings();
   const staffDir = useAssignableStaff();
-  // The seed roster backs BOTH the assignee and the project pickers. In live
-  // mode neither is safe: seed user ids and seed project ids do not exist in
-  // the backend, so picking one produces a 404 on create. Withhold both and
-  // let the backend default (assignee = caller, no project).
-  const seedPickersAvailable = staffDir.available;
+  // Projects still come from the seed roster, which does not exist in the
+  // backend — so the project picker stays demo-only. The assignee picker
+  // draws from the live staff directory (staffDir) in live mode.
+  const projectPickerAvailable = staffDir.source === 'seed';
 
   // Owner
   const [ownerName, setOwnerName] = useState('');
@@ -1058,7 +1059,7 @@ function NewListingModal({ onClose }) {
   // Assignment
   const [assignedTo, setAssignedTo] = useState(currentUser.id);
   const [projectId, setProjectId] = useState(
-    seedPickersAvailable ? state.projects[0]?.id || '' : ''
+    projectPickerAvailable ? state.projects[0]?.id || '' : ''
   );
 
   // Auto-derive listingIntent from category when the user changes category.
@@ -1288,8 +1289,8 @@ function NewListingModal({ onClose }) {
       </div>
 
       <SectionTitle title="Assignment" />
-      {seedPickersAvailable ? (
-        <div className="grid-2">
+      <div className="grid-2">
+        {projectPickerAvailable ? (
           <Field label="Project">
             <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
               <option value="">— None —</option>
@@ -1300,6 +1301,15 @@ function NewListingModal({ onClose }) {
               ))}
             </Select>
           </Field>
+        ) : (
+          <p className="muted">
+            No project picker in live mode yet — the backend has no project
+            directory endpoint. The listing will be created without a project.
+          </p>
+        )}
+        {staffDir.loading ? (
+          <p className="muted">Loading staff directory…</p>
+        ) : staffDir.available ? (
           <Field label="Assigned to">
             <Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
               {staffDir.staff.map((u) => (
@@ -1309,15 +1319,17 @@ function NewListingModal({ onClose }) {
               ))}
             </Select>
           </Field>
-        </div>
-      ) : (
-        <p className="muted">
-          Project and assignee pickers are unavailable in live mode — the
-          backend has no staff or project directory endpoint yet. The listing
-          will be created unassigned and without a project; reassign it once
-          a directory endpoint exists.
-        </p>
-      )}
+        ) : (
+          <p className="muted">
+            {staffDir.reason}{' '}
+            {staffDir.source === 'unavailable' && (
+              <button type="button" className="btn-link" onClick={staffDir.retry}>
+                Retry
+              </button>
+            )}
+          </p>
+        )}
+      </div>
     </Modal>
   );
 }
@@ -1360,7 +1372,9 @@ function AssignListingModal({ listing, onClose, onAssigned }) {
         </>
       }
     >
-      {staffDir.available ? (
+      {staffDir.loading ? (
+        <p className="muted">Loading staff directory…</p>
+      ) : staffDir.available ? (
         <>
           <Field label="Assignee">
             <Select value={staffId} onChange={(e) => setStaffId(e.target.value)}>
@@ -1374,7 +1388,14 @@ function AssignListingModal({ listing, onClose, onAssigned }) {
           <p className="muted">The assignee gets this listing in their scoped view.</p>
         </>
       ) : (
-        <p className="muted">{staffDir.reason}</p>
+        <p className="muted">
+          {staffDir.reason}{' '}
+          {staffDir.source === 'unavailable' && (
+            <button type="button" className="btn-link" onClick={staffDir.retry}>
+              Retry
+            </button>
+          )}
+        </p>
       )}
     </Modal>
   );

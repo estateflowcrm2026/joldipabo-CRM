@@ -14,6 +14,7 @@ import roleRoutes      from './routes/roles.js';
 import teamRoutes      from './routes/teams.js';
 import projectRoutes   from './routes/projects.js';
 import leadRoutes      from './routes/leads.js';
+import contactRoutes   from './routes/contacts.js';
 import listingRoutes   from './routes/listings.js';
 import visitRoutes     from './routes/visits.js';
 import attendanceRoutes from './routes/attendance.js';
@@ -145,6 +146,7 @@ export async function buildApp(overrides = {}) {
     await teamRoutes(scope);
     await projectRoutes(scope);
     await leadRoutes(scope);
+    await contactRoutes(scope);
     await listingRoutes(scope);
     await visitRoutes(scope);
     await attendanceRoutes(scope);

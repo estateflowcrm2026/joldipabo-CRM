@@ -28,6 +28,7 @@ import {
   validateUpdateLead,
 } from './leadValidation.js';
 import { recordAudit } from '../audit/auditLog.js';
+import { followUpSortActive } from './followUpValidation.js';
 
 // re-export so callers don't need to know which file holds the validators
 export {
@@ -45,6 +46,9 @@ export {
  * @property {string=} serviceNeed
  * @property {string=} clientType
  * @property {string=} q              — case-insensitive substring across name/phone/email
+ * @property {string=} followUpFrom   — ISO datetime, inclusive lower bound on next_follow_up
+ * @property {string=} followUpTo     — ISO datetime, exclusive upper bound on next_follow_up
+ * @property {string=} followUpSet    — 'set' (has follow-up) | 'unset' (none)
  */
 
 /**
@@ -87,6 +91,7 @@ const LEAD_COLUMNS = `
   l.purchase_timeline,
   l.matched_listing_ids,
   l.visit_status,
+  (SELECT c.id FROM contacts c WHERE c.tenant_id = l.tenant_id AND c.lead_id = l.id LIMIT 1) AS contact_id,
   u.id           AS owner_user_id,
   u.name         AS owner_user_name,
   u.email        AS owner_user_email,
@@ -149,6 +154,7 @@ export function toLeadDTO(row) {
     // is never undefined, which keeps the consumer's render code simple.
     matchedListingIds: [],
     visitStatus: row.visit_status,
+    contactId: row.contact_id ?? null,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };
@@ -219,6 +225,15 @@ export function buildListFilter(filters = {}) {
   if (filters.serviceNeed) add('l.service_need = ?', filters.serviceNeed);
   if (filters.clientType)  add('l.client_type = ?', filters.clientType);
 
+  // Follow-up window over l.next_follow_up (partial index
+  // idx_leads_tenant_followup backs the range). NULL dues never satisfy a
+  // comparison, so a from/to window implies "set" — `followUpSet=unset`
+  // with a window is rejected in the validator, never here.
+  if (filters.followUpFrom) add('l.next_follow_up >= ?', filters.followUpFrom);
+  if (filters.followUpTo)   add('l.next_follow_up < ?',  filters.followUpTo);
+  if (filters.followUpSet === 'set')   clauses.push('l.next_follow_up IS NOT NULL');
+  if (filters.followUpSet === 'unset') clauses.push('l.next_follow_up IS NULL');
+
   if (filters.q && typeof filters.q === 'string' && filters.q.trim()) {
     const needle = `%${filters.q.trim()}%`;
     const baseIdx = params.length + 1;
@@ -247,6 +262,12 @@ export async function listLeads({ user, filters = {}, pagination = {} }) {
   const limitPlaceholder  = `$${params.length + 1}`;
   const offsetPlaceholder = `$${params.length + 2}`;
 
+  // A follow-up-filtered list is a work queue: oldest-due-first so the
+  // most overdue lead is on top. An unfiltered list keeps newest-first.
+  const orderBy = followUpSortActive(filters)
+    ? 'ORDER BY l.next_follow_up ASC, l.id ASC'
+    : 'ORDER BY l.created_at DESC, l.id DESC';
+
   const dataSql = `
     SELECT ${LEAD_COLUMNS}
       FROM leads l
@@ -258,7 +279,7 @@ export async function listLeads({ user, filters = {}, pagination = {} }) {
         ON p.tenant_id = l.tenant_id AND p.id = l.project_id AND p.deleted_at IS NULL
      WHERE l.deleted_at IS NULL
        AND ${sql}
-     ORDER BY l.created_at DESC, l.id DESC
+     ${orderBy}
      LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}
   `;
 

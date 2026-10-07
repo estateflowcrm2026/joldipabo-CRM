@@ -35,6 +35,8 @@ import {
   validateCreateLead,
   validateUpdateLead,
 } from '../repositories/leadsRepository.js';
+import { getLeadTimeline } from '../repositories/leadTimelineRepository.js';
+import { validateFollowUpFilters } from '../repositories/followUpValidation.js';
 import { DB_NOT_CONFIGURED } from '../db/client.js';
 
 /** @param {import('fastify').FastifyInstance} fastify */
@@ -78,6 +80,36 @@ export default async function leadRoutes(fastify) {
         throw new NotFound('not-found', 'Lead not found.');
       }
       return dto;
+    },
+  );
+
+  // GET /leads/:id/timeline — one chronological history per lead.
+  //
+  // Read-only aggregation over contacts/contact_calls, the lead row,
+  // visit_events and visit_viewings. The lead itself is scope-checked
+  // exactly like GET /leads/:id (out-of-scope → 404, never 403).
+  // Everything else is filtered inside the repository: out-of-scope
+  // visits and an out-of-scope linked contact are skipped silently,
+  // never leaked as 404s inside the list.
+  fastify.get(
+    '/leads/:id/timeline',
+    { preHandler: [...auth, requirePermission('leads', 'view')] },
+    async (req) => {
+      const leadId = (req.params && req.params.id) || null;
+      if (!leadId) throw new BadRequest('invalid-id', 'Lead id is required.');
+
+      const dto = await getLeadById({ user: req.user, leadId });
+      if (!dto) throw new NotFound('not-found', 'Lead not found.');
+
+      const record = {
+        ownerId: dto.owner ? dto.owner.id : null,
+        teamId: dto.teamId ?? null,
+        projectId: dto.project ? dto.project.id : null,
+      };
+      if (!can(req.user, 'leads', 'view', record)) {
+        throw new NotFound('not-found', 'Lead not found.');
+      }
+      return getLeadTimeline(req.user, dto);
     },
   );
 
@@ -235,6 +267,11 @@ export default async function leadRoutes(fastify) {
  * Extract the documented query-string filters. Unknown keys are ignored;
  * empty strings are treated as missing.
  *
+ * Follow-up windows (followUpFrom/followUpTo/followUpSet) power the
+ * daily queue: overdue / today / upcoming. Validated strictly — a bad
+ * window or a contradictory set+window combo is a 400, not a silent
+ * unfiltered list.
+ *
  * @param {Record<string, unknown>=} query
  */
 function extractFilters(query = {}) {
@@ -248,6 +285,7 @@ function extractFilters(query = {}) {
     serviceNeed: pickString(query.serviceNeed),
     clientType:  pickString(query.clientType),
     q:           pickString(query.q),
+    ...validateFollowUpFilters(query),
   };
 }
 

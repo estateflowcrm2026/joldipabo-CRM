@@ -339,13 +339,15 @@ path correct rather than merely quiet:
   the project as `project`. `toFrontendListing` normalises `assignedTo` to an
   id string (what `can()`'s OWN scope and `filterByScope` compare) and adds
   `assignedToName` so the UI shows the real name.
-- **Assignment is withheld.** The backend has no staff directory endpoint
-  (`GET /api/v1/users` returns `{ items: [], placeholder: true }`), so there
-  is no eligible-assignee source in live mode. Rather than offer seeded demo
-  users whose ids 404, the Reassign/Assign controls are withheld and the
-  drawer says why. The desktop create form withholds the project and assignee
-  pickers for the same reason. See `src/services/staffDirectory.js`. When a
-  staff/project directory endpoint lands, that hook is the one place to teach.
+- **Assignment is directory-backed.** `GET /api/v1/users` is the live staff
+  directory (see [STAFF_DIRECTORY.md](./STAFF_DIRECTORY.md)), and
+  `useAssignableStaff()` (`src/services/staffDirectory.js`) fetches it in
+  live mode with loading / error / retry state. The Assign/Reassign
+  controls and the create-form assignee picker offer real people; on
+  directory failure they withhold the picker with a Retry affordance
+  rather than offering seeded demo users whose ids 404. The create-form
+  project picker stays demo-only — there is still no project directory
+  endpoint, and seed project ids do not exist in the backend.
 
 The offline `listing.capture` queue item replays against `POST /api/v1/listings`
 and is marked synced only once the backend confirms (see

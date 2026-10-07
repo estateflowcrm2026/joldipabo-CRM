@@ -49,7 +49,7 @@ if (openDo !== doBlocks.length) {
 doBlocks.forEach((block, i) => {
   const isConditionalDdl = /ALTER\s+TABLE[\s\S]*ADD\s+CONSTRAINT|CREATE\s+(UNIQUE\s+)?INDEX/i.test(block);
   if (!isConditionalDdl) return; // an unconditional write is self-idempotent
-  if (!/information_schema/i.test(block) || !/IF\s+NOT\s+EXISTS/i.test(block)) {
+  if (!/(information_schema|pg_constraint)/i.test(block) || !/IF\s+NOT\s+EXISTS/i.test(block)) {
     problems.push(`DO block #${i} has no NOT EXISTS guard`);
   }
 });

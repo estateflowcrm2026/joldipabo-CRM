@@ -14,6 +14,8 @@ import {
 import { useStore } from '../../state/store.jsx';
 import { filterByScope, can } from '../../data/permissions.js';
 import { useListings } from '../../services/listingsData.jsx';
+import { isApiRepositoryActive } from '../../services/index.js';
+import { LiveVisits } from '../LiveVisits.jsx';
 import {
   Avatar,
   Badge,
@@ -32,6 +34,11 @@ import {
 import { Can } from '../../components/Can.jsx';
 
 export function SiteVisits() {
+  if (isApiRepositoryActive()) return <LiveVisits />;
+  return <DemoSiteVisits />;
+}
+
+function DemoSiteVisits() {
   const { state, currentUser, actions } = useStore();
   const { listings: apiListings } = useListings();
   const [tab, setTab] = useState('upcoming'); // upcoming | today | completed

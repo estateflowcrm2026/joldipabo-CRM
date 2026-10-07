@@ -49,6 +49,7 @@ Thumbs.db
 coverage/
 .nyc_output/
 *.lcov
+server/screenshots/
 
 # Local database artefacts
 server/pgdata/

@@ -12,6 +12,10 @@ import {
   logout,
   logoutAll,
 } from '../repositories/authService.js';
+import {
+  listStaff,
+  validateStaffFilters,
+} from '../repositories/staffRepository.js';
 
 const NOT_IMPLEMENTED = 'Not implemented yet — see docs/AUTH_API_SPEC.md.';
 
@@ -20,7 +24,14 @@ export default async function userRoutes(fastify) {
   const auth = { preHandler: authMiddleware };
 
   // Staff (users) endpoints
-  fastify.get('/users',          { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'view')] }, async () => ({ items: [], placeholder: true }));
+  //
+  // GET /users is the live staff directory: tenant-scoped, filtered by the
+  // caller's `staff:view` scope inside listStaff (all / team+self /
+  // project-shared+self / own-self / none-fail-closed). The DTO carries no
+  // secrets — password_hash, MFA material, tokens and permission_matrix are
+  // never selected. Creation still flows through POST /auth/invite
+  // (onboardingService.inviteUser); no parallel user-create path here.
+  fastify.get('/users',          { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'view')] }, async (req) => listStaff(req.user, { ...validateStaffFilters(req.query), limit: req.query?.limit, offset: req.query?.offset }));
   fastify.get('/users/:id',      { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'view')] }, async () => { throw new NotImplemented('not-implemented', NOT_IMPLEMENTED); });
   fastify.post('/users',         { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'create')] }, async () => { throw new NotImplemented('not-implemented', NOT_IMPLEMENTED); });
   fastify.patch('/users/:id',    { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'edit')] }, async () => { throw new NotImplemented('not-implemented', NOT_IMPLEMENTED); });

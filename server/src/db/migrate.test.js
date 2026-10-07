@@ -13,7 +13,38 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { checksumFor, verifyChecksums, MIGRATIONS, MIGRATION_LOCK_ID } from './migrate.js';
+import { checksumFor, verifyChecksums, MIGRATIONS, MIGRATION_LOCK_ID, syncRlsState } from './migrate.js';
+
+test('unset migration mode preserves enabled RLS without issuing SQL', async () => {
+  const db = { query: async () => { throw new Error('Preserve mode must not change security'); } };
+  for (const mode of [undefined, null, '', 'preserve']) {
+    assert.equal(await syncRlsState(db, mode), 0);
+  }
+});
+
+test('only explicit off disables enabled RLS', async () => {
+  const alterations = [];
+  const db = { query: async (sql) => {
+    if (sql.startsWith('SELECT')) return { rows: [{ relrowsecurity: true }] };
+    alterations.push(sql);
+    return { rows: [] };
+  } };
+  assert.equal(await syncRlsState(db, 'off'), 4);
+  assert.equal(alterations.length, 4);
+  assert.ok(alterations.every((sql) => sql.includes('DISABLE ROW LEVEL SECURITY')));
+});
+
+test('enforce restores disabled RLS and invalid modes fail closed', async () => {
+  const alterations = [];
+  const db = { query: async (sql) => {
+    if (sql.startsWith('SELECT')) return { rows: [{ relrowsecurity: false }] };
+    alterations.push(sql);
+    return { rows: [] };
+  } };
+  assert.equal(await syncRlsState(db, 'enforce'), 4);
+  assert.ok(alterations.every((sql) => sql.includes('ENABLE ROW LEVEL SECURITY')));
+  await assert.rejects(syncRlsState(db, 'typo'), /Invalid migration RLS mode/);
+});
 
 // ---------------------------------------------------------------------------
 // checksumFor
@@ -129,6 +160,9 @@ test('MIGRATIONS lists every migration in order', () => {
     '009-mfa-challenge-revocation',
     '010-rls-listings-leads',
     '011-photos-deprecated',
+    '012-contact-intake',
+    '013-visit-viewings',
+    '014-visit-event-snapshots',
   ]);
 });
 

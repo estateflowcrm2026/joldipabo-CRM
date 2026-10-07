@@ -351,12 +351,16 @@ function validatePartialLeadFields(partial) {
     out.teamId = clampString(partial.teamId, { max: 64 });
   }
 
-  if (partial.nextFollowUp !== undefined && partial.nextFollowUp !== null) {
-    const d = new Date(partial.nextFollowUp);
-    if (Number.isNaN(d.getTime())) {
-      throw new BadRequest('invalid-field', 'nextFollowUp must be a valid date.');
+  if (partial.nextFollowUp !== undefined) {
+    if (partial.nextFollowUp === null) {
+      out.nextFollowUp = null;
+    } else {
+      const d = new Date(partial.nextFollowUp);
+      if (Number.isNaN(d.getTime())) {
+        throw new BadRequest('invalid-field', 'nextFollowUp must be a valid date.');
+      }
+      out.nextFollowUp = d.toISOString();
     }
-    out.nextFollowUp = d.toISOString();
   }
 
   if (partial.serviceNeed !== undefined && partial.serviceNeed !== null) {

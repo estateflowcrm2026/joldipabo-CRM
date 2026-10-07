@@ -515,6 +515,10 @@ describe('validateUpdateLead — happy path', () => {
     assert.equal(result.score, 'warm');
   });
 
+  it('allows a follow-up date to be cleared explicitly', () => {
+    assert.deepEqual(validateUpdateLead({ nextFollowUp: null }), { nextFollowUp: null });
+  });
+
   it('accepts null to clear a field', () => {
     const result = validateUpdateLead({ email: null, notes: null });
     assert.equal(result.email, undefined);

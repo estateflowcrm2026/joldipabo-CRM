@@ -62,6 +62,9 @@ const MIGRATIONS = [
   { name: '009-mfa-challenge-revocation', file: '009-mfa-challenge-revocation.sql' },
   { name: '010-rls-listings-leads', file: '010-rls-listings-leads.sql' },
   { name: '011-photos-deprecated', file: '011-photos-deprecated.sql' },
+  { name: '012-contact-intake', file: '012-contact-intake.sql' },
+  { name: '013-visit-viewings', file: '013-visit-viewings.sql' },
+  { name: '014-visit-event-snapshots', file: '014-visit-event-snapshots.sql' },
 ];
 
 const SEED_FILE = 'seed-demo.sql';
@@ -120,14 +123,15 @@ async function acquireLock(db) {
  * the file that needs it ran. It is still confined to this connection,
  * which the runner closes at the end.
  *
- * Defaults to 'off'. A migration run without this plumbing — a bare
- * `psql -f`, a restore — creates the policies but does not enable RLS,
- * which is the safe direction: a missed enable costs protection, a
- * mistaken enable costs an outage.
+ * An unset or blank deployment mode resolves to 'preserve' for migrations.
+ * Existing RLS remains unchanged. Disabling it requires explicit 'off'.
+ * Runtime mode defaults are not permission to downgrade database security.
  */
 async function exposeRlsMode(db) {
   const { rlsMode } = await import('./rlsMode.js');
-  const mode = rlsMode();
+  // Runtime defaults must not become an implicit database rollback.
+  // With no explicit mode, leave existing table security unchanged.
+  const mode = String(process.env.DB_RLS_MODE ?? '').trim() ? rlsMode() : 'preserve';
   await db.query("SELECT set_config('app.rls_enabled', $1, false)", [mode]);
   return mode;
 }
@@ -159,9 +163,8 @@ async function appliedRecords(db) {
  * that applies 010 with the default `off`, then sets `DB_RLS_MODE=probe`
  * and re-runs, would find the flag having done nothing — and the
  * obvious conclusion ("the mode does not work") would be wrong. Worse in
- * the other direction: a deployment that enabled RLS once and then
- * removed the flag would be stuck enabled, with no way back short of a
- * migration.
+ * the other direction: removing the flag must not implicitly disable RLS.
+ * Rollback remains available through an explicitly configured 'off' mode.
  *
  * So the mode is a PROPERTY of the deployment, applied on every run,
  * and `db:migrate` is the thing that reconciles it. That makes
@@ -173,6 +176,10 @@ async function appliedRecords(db) {
 const RLS_TABLES = ['listings', 'leads', 'visits', 'listing_photos'];
 
 export async function syncRlsState(db, mode) {
+  if (mode == null || mode === '' || mode === 'preserve') return 0;
+  if (!['off', 'probe', 'enforce'].includes(mode)) {
+    throw new Error(`Invalid migration RLS mode: ${mode}`);
+  }
   const shouldEnable = mode !== 'off';
   let changed = 0;
   for (const t of RLS_TABLES) {
