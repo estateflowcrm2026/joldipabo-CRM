@@ -15,7 +15,7 @@
 // is a soft delete via actions.deleteListing which flips
 // status.availability to 'off-market' to match the backend semantics.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Building2,
   Search,
@@ -39,6 +39,8 @@ import {
 import { useStore } from '../../state/store.jsx';
 import { can, RESOURCES } from '../../data/permissions.js';
 import { useListings, resolveAssignee } from '../../services/listingsData.jsx';
+import { isApiRepositoryActive } from '../../services/index.js';
+import { leadMatchesApi } from '../../services/leadMatchesApi.js';
 import { useAssignableStaff } from '../../services/staffDirectory.js';
 import { useProjectsDirectory } from '../../services/teamsProjectsDirectory.js';
 import {
@@ -967,7 +969,17 @@ function DeleteListingButton({ listing, onDeleted }) {
 // matchStatus. Read-only — there is no cross-module deep-link in this phase.
 // Each row is filtered through leads.view so a field executive only sees
 // leads they own. See docs/LEAD_LISTING_MATCHING.md §"UI surfaces".
+//
+// In live/API mode the rows come from GET /listings/:id/interested-leads
+// (persisted `listing_matches`, scope-checked server-side); in demo mode
+// they come from the seeded store exactly as before.
 function InterestedLeads({ listing }) {
+  const live = isApiRepositoryActive();
+  if (live) return <LiveInterestedLeads listing={listing} />;
+  return <DemoInterestedLeads listing={listing} />;
+}
+
+function DemoInterestedLeads({ listing }) {
   const { state, currentUser } = useStore();
   const related = state.matches
     .filter((m) => m.listingId === listing.id)
@@ -1016,6 +1028,91 @@ function InterestedLeads({ listing }) {
       )}
     </section>
   );
+}
+
+// Live counterpart: reads persisted matches from the backend. Consumes the
+// endpoint only — no scoring here. Loading / error + Retry / empty states
+// mirror the LeadMatches section in ContactWorkspace; the row shape mirrors
+// the demo rows above (avatar, name, budget band, status pill) plus the
+// score the backend stored.
+function LiveInterestedLeads({ listing }) {
+  const [state, setState] = useState({ status: 'loading', items: [], error: null });
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ status: 'loading', items: [], error: null });
+    leadMatchesApi.interestedLeads(listing.id, {}, controller.signal)
+      .then((result) => { if (!controller.signal.aborted) setState({ status: 'ready', items: result.items || [], error: null }); })
+      .catch((error) => { if (!controller.signal.aborted) setState({ status: 'error', items: [], error }); });
+    return () => controller.abort();
+  }, [listing.id, revision]);
+
+  const total = state.items.length;
+
+  return (
+    <section className="drawer-section">
+      <h4>Interested leads</h4>
+      {state.status === 'loading' && <LoadingState label="Loading interested leads" />}
+      {state.status === 'error' && (
+        <div className="contact-request-error" role="alert">
+          <p>{state.error?.message || 'Could not load interested leads.'}</p>
+          <Button variant="secondary" size="sm" onClick={() => setRevision((value) => value + 1)}>Retry</Button>
+        </div>
+      )}
+      {state.status === 'ready' && total === 0 && (
+        <p className="muted">No leads matched to this listing yet.</p>
+      )}
+      {state.status === 'ready' && total > 0 && (
+        <>
+          <p className="muted">{total} lead{total === 1 ? '' : 's'} matched this listing.</p>
+          <ul className="interested-leads-list">
+            {state.items.map((match) => {
+              const lead = match.lead || {};
+              const budget = formatLiveBudget(lead.pricing);
+              return (
+                <li key={match.id}>
+                  <Avatar name={lead.name} size="sm" />
+                  <div className="interested-leads-body">
+                    <strong>{lead.name || match.leadId}</strong>
+                    <small>
+                      {[lead.serviceNeed, budget].filter(Boolean).join(' · ')}{match.score != null ? ` · score ${match.score}` : ''}
+                    </small>
+                  </div>
+                  <Badge tone={liveMatchTone(match.status)} dot size="sm">
+                    {LIVE_MATCH_LABELS[match.status] || match.status}
+                  </Badge>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+const LIVE_MATCH_LABELS = {
+  suggested: 'Suggested',
+  viewed_by_lead: 'Viewed by lead',
+  visit_scheduled: 'Visit scheduled',
+  rejected_by_lead: 'Rejected by lead',
+  withdrawn: 'Withdrawn',
+};
+
+function liveMatchTone(status) {
+  if (status === 'viewed_by_lead' || status === 'visit_scheduled') return 'success';
+  if (status === 'rejected_by_lead' || status === 'withdrawn') return 'danger';
+  return 'info';
+}
+
+// Rent-like leads carry rentMin/rentMax, sale-like leads budgetMin/budgetMax.
+// Show whichever band is set, as `₹a–₹b/mo` or `₹a–₹b`.
+function formatLiveBudget(pricing = {}) {
+  const rentBand = [pricing.rentMin, pricing.rentMax].filter((v) => v != null);
+  const saleBand = [pricing.budgetMin, pricing.budgetMax].filter((v) => v != null);
+  if (rentBand.length > 0) return `${rentBand.map((v) => formatINR(v)).join('–')}/mo`;
+  if (saleBand.length > 0) return saleBand.map((v) => formatINR(v)).join('–');
+  return null;
 }
 
 // ---------- Modals ----------

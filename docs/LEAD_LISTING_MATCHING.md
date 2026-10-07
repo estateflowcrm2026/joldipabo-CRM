@@ -278,6 +278,7 @@ The function signature in [src/services/matchListings.js](../src/services/matchL
 | GET | `/api/v1/leads/:id/matches` | `leads:view` on the lead | Saved rows, score-desc. Out-of-scope lead → 404. Out-of-scope listings skipped silently. |
 | POST | `/api/v1/leads/:id/matches` | `leads:edit` on the lead | Recalculate: score every scope-visible available listing, keep top `topN` (1–25, default 10) at/above `minScore` (0–100, default 45). Upserts `suggested` rows; human-touched rows keep their status, only the score refreshes. Non-ranking rows are left untouched (audit trail, not cache). → 201. |
 | PATCH | `/api/v1/leads/:id/matches/:listingId` | `leads:edit` on the lead + `listings:view` on the listing | Set `status` (one of `suggested \| viewed_by_lead \| visit_scheduled \| rejected_by_lead \| withdrawn`) and/or `note` (≤4000 chars, `null` clears). Unknown pair or out-of-scope listing → 404. |
+| GET | `/api/v1/listings/:id/interested-leads` | `listings:view` on the listing | Listing-side pivot: saved rows for one listing, score-desc. Out-of-scope listing → 404. Out-of-scope leads skipped silently. Optional `?status=` narrows to one match status (unknown value → 400). Read-only — consumes persisted rows, no scoring. |
 
 Every write runs in a transaction with its audit row (`recalculated-matches`, `updated-match-status`). `reason` is recomputed at read time from the live lead + listing rows, so it always explains the present state; `note` stays human-written.
 
@@ -294,14 +295,19 @@ Same two-stage shape (hard filter → weighted signals → floor → topN), diff
 
 Weights mirror the demo scorer so scores stay comparable: category 20, same project 30, city 15, locality 10, budget up to 15, property up to 10.
 
-### 9.3 Live UI — `LeadMatches` in ContactWorkspace
+### 9.3 Live UI — `LeadMatches` in ContactWorkspace + `LiveInterestedLeads` in Listings
 
-Rendered inside `LeadDetail` between the follow-up form and the timeline, only in live/API mode (demo keeps the seeded drawer in `DemoLeads`). Behaviour:
+`LeadMatches` renders inside `LeadDetail` between the follow-up form and the timeline, only in live/API mode (demo keeps the seeded drawer in `DemoLeads`). Behaviour:
 
 - List with loading / error + Retry / empty states (empty prompts a recalculation).
 - **Recalculate matches** button (POST refresh); human-touched statuses survive.
 - Per-row status dropdown (PATCH) and inline **Schedule visit** form (executive + datetime + notes → POST `/visits` with this lead + the row's listing, then the row flips to `visit_scheduled`).
 - Price renders `₹65,000/mo` for rent-monthly rows, outright `₹…` otherwise.
+
+`LiveInterestedLeads` renders inside the desktop `ListingDrawer`'s "Interested leads" section, only in live/API mode (demo keeps the seeded `DemoInterestedLeads` rows). Behaviour:
+
+- List with loading / error + Retry / empty states via GET `/listings/:id/interested-leads`.
+- Read-only rows: avatar, lead name, service-need + budget band (`₹a–₹b/mo` for rent bands, `₹a–₹b` for sale bands) + stored score, live status pill. No scoring, no status editing, no scheduling from this side — those live on the lead side.
 
 ### 9.4 Real vs still demo
 
@@ -309,14 +315,15 @@ Rendered inside `LeadDetail` between the follow-up form and the timeline, only i
 | ------- | ----------------- | ------------------- |
 | Lead detail matches | `LeadMatches` in ContactWorkspace (list / refresh / status / schedule) | `DemoLeads` drawer section, `matchListings.js` scorer, `MatchScheduleVisitSheet` |
 | Mobile lead sheet top-3 | Not wired — mobile shows demo matches only | `MobileLeadSheet` top-3 + Call/WhatsApp/Navigate/Schedule |
-| Listing "Interested leads" | Not wired | Desktop `ListingDrawer` + mobile sheet footer |
+| Listing "Interested leads" (desktop) | `LiveInterestedLeads` in `ListingDrawer` (read-only list via `/interested-leads`) | `DemoInterestedLeads` rows from seeded store |
+| Listing "Interested leads" (mobile) | Not wired — mobile sheet footer shows demo matches only | Mobile sheet footer (3 chips max, read-only) |
 | Match → visit chip | Visit carries `listing_id`; chip rendering stays the demo component | `SiteVisits` / mobile visit card chip |
 
 ### 9.5 Verification
 
-- `server`: `leadMatchesRepository.test.js` (11 scorer units + 3 validator units + 7 fake-client repo units) and the matches block in `routes/leads.test.js` (401s, placeholder-403 gates, 400 validator rejects, DB-gated round-trip refresh → list → patch → refresh-preserves-status → restore). Full suite: 580 pass, 0 fail, 55 DB-gated skips.
-- `frontend`: `leadMatchesApi.test.mjs` (7 URL assertions) wired into root `npm test`; `npm run build` passes.
-- Not run: DB-integration round-trip with `DATABASE_URL`, live HTTP verify script, browser smoke (no `CHROME_PATH`/demo password in this env).
+- `server`: `leadMatchesRepository.test.js` (11 scorer units + 4 validator units + 11 fake-client repo units: lead-side list/refresh/update + interested-leads pivot skip/filter/404s) and the route blocks in `routes/leads.test.js` (matches 401s, placeholder-403 gates, 400 validator rejects, DB-gated round-trip) and `routes/listings.test.js` (interested-leads 401, placeholder-403 gate, 400 bad status, DB-gated list → filter → 404s). Full suite: 588 pass, 0 fail, 58 DB-gated skips.
+- `frontend`: `leadMatchesApi.test.mjs` (11 URL assertions) wired into root `npm test`; `npm run build` passes.
+- Not run: DB-integration round-trips with `DATABASE_URL`, live HTTP verify script, browser smoke (no `CHROME_PATH`/demo password in this env).
 
 ---
 

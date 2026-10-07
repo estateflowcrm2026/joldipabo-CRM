@@ -23,9 +23,11 @@ import {
   splitLocationTokens,
 } from './leadMatchScorer.js';
 import {
+  listInterestedLeads,
   listMatches,
   refreshMatches,
   updateMatch,
+  validateInterestedLeadsOptions,
   validateMatchUpdate,
   validateRefreshOptions,
 } from './leadMatchesRepository.js';
@@ -182,6 +184,14 @@ test('validateRefreshOptions defaults and bounds', () => {
   assert.throws(() => validateRefreshOptions({ minScore: 101 }), /minScore must be/);
 });
 
+test('validateInterestedLeadsOptions defaults and rejects unknown status', () => {
+  assert.deepEqual(validateInterestedLeadsOptions({}), {});
+  assert.deepEqual(validateInterestedLeadsOptions({ status: 'suggested' }), { status: 'suggested' });
+  assert.deepEqual(validateInterestedLeadsOptions({ status: '' }), {});
+  assert.deepEqual(validateInterestedLeadsOptions(null), {});
+  assert.throws(() => validateInterestedLeadsOptions({ status: 'matched' }), /status must be one of/);
+});
+
 // ---------------------------------------------------------------------------
 // 2. Repository over a fake pg client
 // ---------------------------------------------------------------------------
@@ -294,20 +304,33 @@ function listingRow(id, over = {}) {
 
 // Minimal pg stand-in: answers the exact statements the repository
 // issues, keyed by unmistakable SQL fragments.
-function makeClient({ matches = [], listings = [] } = {}) {
+function makeClient({ matches = [], listings = [], leads = null } = {}) {
   const written = [];
   return {
     written,
     async query(text, params = []) {
       const sql = text.replace(/\s+/g, ' ');
       if (sql.includes('FROM leads l')) {
+        // Interested-leads pivot: id-filter the injected lead rows.
+        // Lead-side list: single leadRow() (leads not injected).
+        if (leads) {
+          const ids = params.slice(1);
+          const rows = leads.filter((l) => ids.includes(l.id));
+          return { rows: rows.map((l) => ({ ...l })), rowCount: rows.length };
+        }
         return { rows: [leadRow()], rowCount: 1 };
       }
       if (sql.includes('FROM projects')) {
         return { rows: [], rowCount: 0 };
       }
       if (sql.includes('FROM listing_matches m')) {
-        return { rows: matches.map((m) => ({ ...m })), rowCount: matches.length };
+        // The interested-leads pivot binds the status filter as $3; honour
+        // it like the real WHERE clause so filter tests are meaningful.
+        let rows = matches.map((m) => ({ ...m }));
+        if (sql.includes('m.status = $3') && params[2] !== undefined) {
+          rows = rows.filter((m) => m.status === params[2]);
+        }
+        return { rows, rowCount: rows.length };
       }
       if (sql.includes('FROM listing_matches')) {
         return { rows: matches.map((m) => ({ ...m })), rowCount: matches.length };
@@ -470,5 +493,77 @@ test('updateMatch 404s an out-of-scope listing', async () => {
   await assert.rejects(
     () => updateMatch({ user: FIELD, leadId: 'ld_1', listingId: 'l_theirs', changes: { status: 'withdrawn' } }, { client }),
     /Match not found/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 3. Interested-leads pivot over a fake pg client
+// ---------------------------------------------------------------------------
+
+function matchRow(id, leadId, listingId, over = {}) {
+  return {
+    id, lead_id: leadId, listing_id: listingId, match_score: '88.00',
+    status: 'suggested', note: null, matched_at: new Date(), matched_by: null,
+    ...over,
+  };
+}
+
+test('listInterestedLeads returns lead subsets score-desc', async () => {
+  const matches = [
+    matchRow('lm_1', 'ld_1', 'l_mine', { match_score: '92.50', status: 'viewed_by_lead' }),
+    matchRow('lm_2', 'ld_2', 'l_mine', { match_score: '75.00' }),
+  ];
+  const leads = [
+    leadRow(),
+    { ...leadRow(), id: 'ld_2', name: 'Sandeep', owner_id: 'u-asha', owner_user_name: 'Asha' },
+  ];
+  const client = makeClient({ matches, listings: [listingRow('l_mine')], leads });
+  const result = await listInterestedLeads(SUPER, 'l_mine', {}, { client });
+  assert.equal(result.listingId, 'l_mine');
+  assert.deepEqual(result.items.map((i) => i.leadId), ['ld_1', 'ld_2']);
+  const first = result.items[0];
+  assert.equal(first.status, 'viewed_by_lead');
+  assert.equal(first.score, 92.5);
+  assert.equal(first.lead.name, 'Meera');
+  assert.equal(first.lead.phone, '+9111');
+  assert.equal(first.lead.owner.id, 'u-asha');
+  assert.deepEqual(first.lead.pricing, { budgetMin: null, budgetMax: null, rentMin: 45000, rentMax: 75000 });
+  assert.match(first.reason, /score/);
+});
+
+test('listInterestedLeads honours the status filter', async () => {
+  const matches = [matchRow('lm_1', 'ld_1', 'l_mine', { status: 'viewed_by_lead' })];
+  const client = makeClient({ matches, listings: [listingRow('l_mine')], leads: [leadRow()] });
+  const filtered = await listInterestedLeads(SUPER, 'l_mine', { status: 'suggested' }, { client });
+  assert.deepEqual(filtered.items, []);
+  const kept = await listInterestedLeads(SUPER, 'l_mine', { status: 'viewed_by_lead' }, { client });
+  assert.equal(kept.items.length, 1);
+});
+
+test('listInterestedLeads skips out-of-scope leads silently', async () => {
+  const matches = [
+    matchRow('lm_1', 'ld_1', 'l_mine'),
+    matchRow('lm_2', 'ld_theirs', 'l_mine'),
+  ];
+  const leads = [
+    leadRow(),
+    // Owned by u-vijay → outside u-asha's leads:view (own).
+    { ...leadRow(), id: 'ld_theirs', name: 'Stranger', owner_id: 'u-vijay', owner_user_id: 'u-vijay', owner_user_name: 'Vijay' },
+  ];
+  const client = makeClient({ matches, listings: [listingRow('l_mine')], leads });
+  const result = await listInterestedLeads(FIELD, 'l_mine', {}, { client });
+  assert.deepEqual(result.items.map((i) => i.leadId), ['ld_1']);
+});
+
+test('listInterestedLeads 404s an out-of-scope listing', async () => {
+  const matches = [matchRow('lm_1', 'ld_1', 'l_theirs')];
+  const client = makeClient({
+    matches,
+    listings: [listingRow('l_theirs', { assigned_to: 'u-vijay', assigned_user_id: 'u-vijay', assigned_user_name: 'Vijay' })],
+    leads: [leadRow()],
+  });
+  await assert.rejects(
+    () => listInterestedLeads(FIELD, 'l_theirs', {}, { client }),
+    /Listing not found/,
   );
 });

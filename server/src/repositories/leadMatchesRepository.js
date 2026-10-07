@@ -147,6 +147,30 @@ export function validateRefreshOptions(input = {}) {
   return { topN, minScore };
 }
 
+/**
+ * Validate the GET interested-leads query options. Only `status` is
+ * supported, and only as a known match status; anything else is a 400
+ * (an unknown status silently returning [] would lie).
+ *
+ * @param {unknown} input
+ * @returns {{ status?: string }}
+ */
+export function validateInterestedLeadsOptions(input = {}) {
+  const src = input && typeof input === 'object' ? input : {};
+  const out = {};
+  if (src.status !== undefined && src.status !== null && src.status !== '') {
+    const status = pickString(src.status);
+    if (!MATCH_STATUSES.includes(status)) {
+      throw new BadRequest(
+        'invalid-status',
+        `status must be one of: ${MATCH_STATUSES.join(', ')}.`,
+      );
+    }
+    out.status = status;
+  }
+  return out;
+}
+
 function toNumberOrNull(v) {
   if (v === null || v === undefined) return null;
   const n = typeof v === 'number' ? v : Number(v);
@@ -281,6 +305,148 @@ function listingJoins() {
       ON u.tenant_id = l.tenant_id AND u.id = l.assigned_to AND u.deleted_at IS NULL
     LEFT JOIN projects p
       ON p.tenant_id = l.tenant_id AND p.id = l.project_id AND p.deleted_at IS NULL`;
+}
+
+// Lead columns needed to rebuild a lead DTO for the interested-leads
+// pivot. Mirrors leadsRepository LEAD_COLUMNS verbatim (including the
+// contact_id subquery) so toLeadDTO receives every field it reads.
+const INTERESTED_LEAD_COLUMNS = `
+  l.id, l.tenant_id, l.name, l.phone, l.email, l.project_id, l.status,
+  l.score, l.budget_min, l.budget_max, l.source, l.notes, l.owner_id,
+  l.team_id, l.created_by, l.next_follow_up, l.created_at, l.updated_at,
+  l.deleted_at, l.service_need, l.client_type, l.requirements,
+  l.rent_min, l.rent_max, l.preferred_location, l.desired_property_type,
+  l.move_in_date, l.purchase_timeline, l.matched_listing_ids, l.visit_status,
+  (SELECT c.id FROM contacts c WHERE c.tenant_id = l.tenant_id AND c.lead_id = l.id LIMIT 1) AS contact_id,
+  u.id AS owner_user_id, u.name AS owner_user_name, u.email AS owner_user_email,
+  t.id AS team_pk, t.name AS team_name,
+  p.id AS project_pk, p.name AS project_name
+`;
+
+function interestedLeadJoins() {
+  return `LEFT JOIN users u
+      ON u.tenant_id = l.tenant_id AND u.id = l.owner_id AND u.deleted_at IS NULL
+    LEFT JOIN teams t
+      ON t.tenant_id = l.tenant_id AND t.id = l.team_id AND t.deleted_at IS NULL
+    LEFT JOIN projects p
+      ON p.tenant_id = l.tenant_id AND p.id = l.project_id AND p.deleted_at IS NULL`;
+}
+
+/**
+ * Build one API interested-lead row from a `listing_matches` row joined
+ * to its lead. `reason` is recomputed from the live pair (same as the
+ * lead-side pivot); the `lead` subset carries the fields a listing
+ * drawer needs without re-fetching the lead.
+ */
+function toInterestedLeadDTO(matchRow, leadDTO, listingDTO, project) {
+  const { reason } = scoreLeadListing(leadDTO, listingDTO, project);
+  return {
+    id: matchRow.id,
+    leadId: matchRow.lead_id,
+    listingId: matchRow.listing_id,
+    score: toNumberOrNull(matchRow.match_score),
+    reason,
+    status: matchRow.status,
+    note: matchRow.note ?? null,
+    matchedAt: toIso(matchRow.matched_at),
+    matchedBy: matchRow.matched_by ?? null,
+    lead: leadDTO
+      ? {
+          id: leadDTO.id,
+          name: leadDTO.name,
+          phone: leadDTO.phone,
+          email: leadDTO.email,
+          status: leadDTO.status,
+          score: leadDTO.score,
+          serviceNeed: leadDTO.serviceNeed,
+          clientType: leadDTO.clientType,
+          pricing: leadDTO.pricing,
+          preferredLocation: leadDTO.preferredLocation,
+          desiredPropertyType: leadDTO.desiredPropertyType,
+          nextFollowUp: leadDTO.nextFollowUp,
+          owner: leadDTO.owner,
+          teamId: leadDTO.teamId,
+        }
+      : null,
+  };
+}
+
+/**
+ * List saved matches for a listing (the interested-leads pivot),
+ * score-desc. An out-of-scope (or missing) listing 404s; out-of-scope
+ * leads are skipped silently, never leaked as 404s inside the list.
+ * Optional `status` narrows to one match status.
+ *
+ * @param {object} user — req.user
+ * @param {string} listingId
+ * @param {{ status?: string }} [options]
+ * @param {{ client?: { query: Function } }=} deps — injectable client for tests
+ * @returns {Promise<{ listingId: string, items: object[] }>}
+ */
+export async function listInterestedLeads(user, listingId, options = {}, deps = {}) {
+  if (!user?.tenantId) throw new NotFound('not-found', 'Listing not found.');
+  if (!listingId) throw new BadRequest('invalid-id', 'Listing id is required.');
+  const { status } = validateInterestedLeadsOptions(options);
+  const run = runnerFor(user, deps);
+
+  const { rows: listingRows } = await run(
+    `SELECT ${MATCH_LISTING_COLUMNS}
+       FROM listings l
+       ${listingJoins()}
+      WHERE l.tenant_id = $1 AND l.id = $2 AND l.deleted_at IS NULL`,
+    [user.tenantId, listingId],
+  );
+  const listingDTO = listingRows[0] ? toListingDTO(listingRows[0]) : null;
+  if (!listingDTO || !can(user, 'listings', 'view', listingRecord(listingDTO))) {
+    throw new NotFound('not-found', 'Listing not found.');
+  }
+
+  const matchParams = [user.tenantId, listingId];
+  let matchWhere = `m.tenant_id = $1 AND m.listing_id = $2`;
+  if (status) {
+    matchParams.push(status);
+    matchWhere += ` AND m.status = $3`;
+  }
+  const { rows: matchRows } = await run(
+    `SELECT m.* FROM listing_matches m
+      WHERE ${matchWhere}
+      ORDER BY m.match_score DESC NULLS LAST, m.matched_at DESC, m.id DESC`,
+    matchParams,
+  );
+  if (matchRows.length === 0) return { listingId, items: [] };
+
+  const leadIds = [...new Set(matchRows.map((r) => r.lead_id))];
+  const placeholders = leadIds.map((_, i) => `$${i + 2}`).join(', ');
+  const { rows: leadRows } = await run(
+    `SELECT ${INTERESTED_LEAD_COLUMNS}
+       FROM leads l
+       ${interestedLeadJoins()}
+      WHERE l.tenant_id = $1 AND l.id IN (${placeholders}) AND l.deleted_at IS NULL`,
+    [user.tenantId, ...leadIds],
+  );
+  const byId = new Map();
+  for (const row of leadRows) {
+    const dto = toLeadDTO(row);
+    if (dto && can(user, 'leads', 'view', leadRecord(dto))) {
+      byId.set(dto.id, dto);
+    }
+  }
+
+  const project = await loadProject(
+    { query: (text, params) => run(text, params) },
+    user.tenantId,
+    listingDTO.project?.id ?? null,
+  );
+
+  const items = [];
+  for (const matchRow of matchRows) {
+    const leadDTO = byId.get(matchRow.lead_id);
+    // Skipped silently: deleted, cross-tenant, or outside the caller's
+    // leads:view scope. Never a 404 inside the list.
+    if (!leadDTO) continue;
+    items.push(toInterestedLeadDTO(matchRow, leadDTO, listingDTO, project));
+  }
+  return { listingId, items };
 }
 
 /**

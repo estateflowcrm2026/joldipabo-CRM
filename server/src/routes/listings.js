@@ -4,6 +4,7 @@
 //
 //   GET    /listings                       list, RBAC-scoped
 //   GET    /listings/:id                   detail (404 for out-of-scope)
+//   GET    /listings/:id/interested-leads  saved matches, score-desc (404 for out-of-scope)
 //   POST   /listings                       create  (listings:create)
 //   PATCH  /listings/:id                   update  (listings:edit)
 //   DELETE /listings/:id                   soft delete (listings:delete)
@@ -43,6 +44,10 @@ import {
   validateVerifyListing,
   verifyListing,
 } from '../repositories/listingsRepository.js';
+import {
+  listInterestedLeads,
+  validateInterestedLeadsOptions,
+} from '../repositories/leadMatchesRepository.js';
 import { DB_NOT_CONFIGURED } from '../db/client.js';
 
 /** @param {import('fastify').FastifyInstance} fastify */
@@ -90,6 +95,27 @@ export default async function listingRoutes(fastify) {
         throw new NotFound('not-found', 'Listing not found.');
       }
       return dto;
+    },
+  );
+
+  // ---- READ (matches pivot) --------------------------------------------------
+
+  // GET /listings/:id/interested-leads — saved matches for one listing,
+  // score-desc (the listing-side pivot of GET /leads/:id/matches).
+  //
+  // Same scope contract as the lead-side list, mirrored: the listing
+  // itself is scope-checked exactly like GET /listings/:id (out-of-scope
+  // → 404, never 403), and out-of-scope leads are skipped silently inside
+  // the list by the repository — never leaked as 404s. Consumes persisted
+  // `listing_matches` rows only; no scoring happens here.
+  fastify.get(
+    '/listings/:id/interested-leads',
+    { preHandler: [...auth, requirePermission('listings', 'view')] },
+    async (req) => {
+      const listingId = (req.params && req.params.id) || null;
+      if (!listingId) throw new BadRequest('invalid-id', 'Listing id is required.');
+      const options = validateInterestedLeadsOptions(req.query);
+      return listInterestedLeads(req.user, listingId, options);
     },
   );
 

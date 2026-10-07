@@ -28,7 +28,17 @@ try {
 
   await leadMatchesApi.list('lead_/unsafe');
   assert.match(calls.at(-1).url, /\/leads\/lead_%2Funsafe\/matches$/);
-  console.log('lead matches API: 7 assertions passed');
+
+  await leadMatchesApi.interestedLeads('l_1');
+  assert.match(calls.at(-1).url, /\/listings\/l_1\/interested-leads$/);
+  assert.equal(calls.at(-1).options.method, 'GET');
+
+  await leadMatchesApi.interestedLeads('l_1', { status: 'suggested' });
+  assert.match(calls.at(-1).url, /\/listings\/l_1\/interested-leads\?status=suggested$/);
+
+  await leadMatchesApi.interestedLeads('list_/unsafe');
+  assert.match(calls.at(-1).url, /\/listings\/list_%2Funsafe\/interested-leads$/);
+  console.log('lead matches API: 11 assertions passed');
 } finally {
   globalThis.fetch = originalFetch;
 }
