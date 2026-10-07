@@ -6,7 +6,7 @@
 import { authMiddleware } from '../auth/authMiddleware.js';
 import { requirePermission } from '../rbac/requirePermission.js';
 import { NotImplemented, BadRequest, NotFound } from '../utils/errors.js';
-import { query } from '../db/client.js';
+import { query, transaction } from '../db/client.js';
 import {
   listSessionsForUser,
   logout,
@@ -16,6 +16,10 @@ import {
   listStaff,
   validateStaffFilters,
 } from '../repositories/staffRepository.js';
+import {
+  createStaff,
+  adminResetPassword,
+} from '../repositories/staffManagement.js';
 
 const NOT_IMPLEMENTED = 'Not implemented yet — see docs/AUTH_API_SPEC.md.';
 
@@ -29,11 +33,43 @@ export default async function userRoutes(fastify) {
   // caller's `staff:view` scope inside listStaff (all / team+self /
   // project-shared+self / own-self / none-fail-closed). The DTO carries no
   // secrets — password_hash, MFA material, tokens and permission_matrix are
-  // never selected. Creation still flows through POST /auth/invite
-  // (onboardingService.inviteUser); no parallel user-create path here.
+  // never selected.
+  //
+  // POST /users is manual staff creation: the admin types an initial
+  // password (hashed with Argon2id, never stored or returned) and shares
+  // it with the new staff member out of band. No email is sent — that is
+  // the invite flow (`POST /auth/invite`), which is a separate system.
   fastify.get('/users',          { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'view')] }, async (req) => listStaff(req.user, { ...validateStaffFilters(req.query), limit: req.query?.limit, offset: req.query?.offset }));
   fastify.get('/users/:id',      { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'view')] }, async () => { throw new NotImplemented('not-implemented', NOT_IMPLEMENTED); });
-  fastify.post('/users',         { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'create')] }, async () => { throw new NotImplemented('not-implemented', NOT_IMPLEMENTED); });
+  fastify.post('/users',
+    { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'create')] },
+    async (req) => transaction((client) => createStaff({
+      client,
+      actor: req.user,
+      name: req.body?.name,
+      email: req.body?.email,
+      phone: req.body?.phone,
+      roleId: req.body?.roleId ?? req.body?.role,
+      teamId: req.body?.teamId ?? req.body?.team,
+      designation: req.body?.designation,
+      status: req.body?.status,
+      initialPassword: req.body?.initialPassword,
+      req,
+    })),
+  );
+  // Admin password reset: sets a new password directly, clears the lockout
+  // counters, and revokes every session. The plaintext is hashed and never
+  // returned; the response is a confirmation only.
+  fastify.post('/users/:id/reset-password',
+    { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'edit')] },
+    async (req) => transaction((client) => adminResetPassword({
+      client,
+      actor: req.user,
+      userId: req.params.id,
+      newPassword: req.body?.newPassword,
+      req,
+    })),
+  );
   fastify.patch('/users/:id',    { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'edit')] }, async () => { throw new NotImplemented('not-implemented', NOT_IMPLEMENTED); });
   fastify.delete('/users/:id',   { ...auth, preHandler: [authMiddleware, requirePermission('staff', 'delete')] }, async () => { throw new NotImplemented('not-implemented', NOT_IMPLEMENTED); });
 

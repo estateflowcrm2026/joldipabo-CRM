@@ -3,6 +3,7 @@
 
 import React, { useMemo, useState } from 'react';
 import {
+  KeyRound,
   Mail,
   Phone,
   Plus,
@@ -25,18 +26,34 @@ import {
   formatDate,
 } from '../../components/ui.jsx';
 import { Can } from '../../components/Can.jsx';
+import { isApiRepositoryActive } from '../../services/index.js';
+import { staffApi } from '../../services/staffApi.js';
+import { useAssignableStaff } from '../../services/staffDirectory.js';
+
+function apiMessage(error) {
+  return error?.data?.error?.message || error?.message || 'The request could not be completed.';
+}
 
 export function Staff() {
-  const { state, currentUser, roleDefinitions } = useStore();
+  const { state, actions, currentUser, roleDefinitions } = useStore();
   const [query, setQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [teamFilter, setTeamFilter] = useState('all');
   const [editing, setEditing] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [resetting, setResetting] = useState(null);
+
+  // Live mode reads the backend directory; demo mode keeps the seed roster.
+  const live = isApiRepositoryActive();
+  const directory = useAssignableStaff();
+  const liveStaff = useMemo(
+    () => (live && directory.source === 'live' ? directory.staff : null),
+    [live, directory],
+  );
 
   const users = useMemo(
-    () => filterByScope(currentUser, 'staff', 'view', state.users),
-    [currentUser, state.users]
+    () => (liveStaff ?? filterByScope(currentUser, 'staff', 'view', state.users)),
+    [liveStaff, currentUser, state.users]
   );
 
   const filtered = useMemo(() => {
@@ -50,6 +67,10 @@ export function Staff() {
         .some((v) => v.toLowerCase().includes(lower));
     });
   }, [users, query, roleFilter, teamFilter]);
+
+  const refreshDirectory = () => {
+    directory.retry();
+  };
 
   return (
     <div className="staff-page">
@@ -94,7 +115,15 @@ export function Staff() {
           </Select>
         </div>
 
-        {filtered.length === 0 ? (
+        {live && directory.loading ? (
+          <p className="muted">Loading staff directory…</p>
+        ) : live && directory.source === 'unavailable' ? (
+          <EmptyState
+            icon={UsersIcon}
+            title="Staff directory unavailable"
+            description={directory.reason || 'Could not load the staff directory.'}
+          />
+        ) : filtered.length === 0 ? (
           <EmptyState
             icon={UsersIcon}
             title={users.length === 0 ? 'No staff in your scope' : 'No staff match these filters'}
@@ -130,7 +159,7 @@ export function Staff() {
                   <ul className="kv-list">
                     <li><span>Email</span><strong>{user.email}</strong></li>
                     <li><span>Phone</span><strong>{user.phone}</strong></li>
-                    <li><span>Team</span><strong>{team?.name || '—'}</strong></li>
+                    <li><span>Team</span><strong>{team?.name || user.teamName || '—'}</strong></li>
                     <li><span>Joined</span><strong>{formatDate(user.joinedAt)}</strong></li>
                     <li>
                       <span>Projects</span>
@@ -141,13 +170,21 @@ export function Staff() {
                     <a className="btn btn-secondary btn-sm" href={`mailto:${user.email}`}>
                       <Mail size={14} /> Mail
                     </a>
-                    <a className="btn btn-secondary btn-sm" href={`tel:${user.phone.replace(/\s/g, '')}`}>
-                      <Phone size={14} /> Call
-                    </a>
+                    {user.phone ? (
+                      <a className="btn btn-secondary btn-sm" href={`tel:${String(user.phone).replace(/\s/g, '')}`}>
+                        <Phone size={14} /> Call
+                      </a>
+                    ) : null}
                     <Can resource="staff" action="edit" record={user}>
-                      <Button variant="ghost" size="sm" onClick={() => setEditing(user)}>
-                        Edit
-                      </Button>
+                      {live ? (
+                        <Button variant="ghost" size="sm" icon={KeyRound} onClick={() => setResetting(user)}>
+                          Reset password
+                        </Button>
+                      ) : (
+                        <Button variant="ghost" size="sm" onClick={() => setEditing(user)}>
+                          Edit
+                        </Button>
+                      )}
                     </Can>
                   </footer>
                 </article>
@@ -160,7 +197,14 @@ export function Staff() {
       {editing && (
         <EditStaffModal user={editing} onClose={() => setEditing(null)} />
       )}
-      {creating && <CreateStaffModal onClose={() => setCreating(false)} />}
+      {creating && (
+        live
+          ? <CreateStaffLiveModal onClose={() => setCreating(false)} onCreated={refreshDirectory} />
+          : <CreateStaffModal onClose={() => setCreating(false)} />
+      )}
+      {resetting && (
+        <ResetPasswordModal user={resetting} onClose={() => setResetting(null)} />
+      )}
     </div>
   );
 }
@@ -298,6 +342,198 @@ function CreateStaffModal({ onClose }) {
             ))}
           </Select>
         </Field>
+      </div>
+    </Modal>
+  );
+}
+
+// Live-mode creation: POST /users with an admin-typed initial password.
+// The password is sent once, hashed server-side, and never shown again —
+// the success state is a confirmation naming the account, not the secret.
+function CreateStaffLiveModal({ onClose, onCreated }) {
+  const { actions, roleDefinitions, state } = useStore();
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [designation, setDesignation] = useState('');
+  const [role, setRole] = useState('field-executive');
+  const [teamId, setTeamId] = useState('');
+  const [initialPassword, setInitialPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const submit = async () => {
+    if (!name.trim() || !email.trim()) {
+      setError('Name and email are required.');
+      return;
+    }
+    if (!initialPassword) {
+      setError('Set an initial password to share with the new staff member.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const created = await staffApi.create({
+        name: name.trim(),
+        email: email.trim(),
+        phone: phone.trim() || undefined,
+        roleId: role,
+        teamId: teamId || undefined,
+        designation: designation.trim() || undefined,
+        initialPassword,
+      });
+      // The password field is cleared before anything else happens, so the
+      // secret does not linger in component state after the request.
+      setInitialPassword('');
+      actions.toast(`Staff account created for ${created.email}. Share the password with them directly.`, 'success');
+      onCreated?.();
+      onClose();
+    } catch (err) {
+      setError(apiMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Add new staff"
+      width={520}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={saving}>
+            {saving ? 'Creating…' : 'Create staff'}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid-2">
+        <Field label="Full name" required>
+          <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Staff full name" />
+        </Field>
+        <Field label="Email" required>
+          <TextInput value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" />
+        </Field>
+        <Field label="Phone">
+          <TextInput value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98XXX XXXXX" />
+        </Field>
+        <Field label="Designation">
+          <TextInput value={designation} onChange={(e) => setDesignation(e.target.value)} placeholder="e.g. Field Executive" />
+        </Field>
+        <Field label="Role" span={2}>
+          <Select value={role} onChange={(e) => setRole(e.target.value)}>
+            {Object.values(roleDefinitions).map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Team" span={2} hint="Optional. Must be a team in your organisation.">
+          <Select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+            <option value="">No team</option>
+            {(state.teams || []).map((team) => (
+              <option key={team.id} value={team.id}>
+                {team.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field
+          label="Initial password"
+          span={2}
+          required
+          hint="Password will not be shown again. Share it with the staff member directly."
+        >
+          <TextInput
+            type="password"
+            value={initialPassword}
+            onChange={(e) => setInitialPassword(e.target.value)}
+            placeholder="At least 10 characters"
+            autoComplete="new-password"
+          />
+        </Field>
+        {error && (
+          <p className="form-error" span={2} role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// Live-mode reset: POST /users/:id/reset-password. Confirmation only — the
+// new password is never echoed back, so the admin must share out of band
+// what they just typed.
+function ResetPasswordModal({ user, onClose }) {
+  const { actions } = useStore();
+  const [newPassword, setNewPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const submit = async () => {
+    if (!newPassword) {
+      setError('Type the new password to set.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await staffApi.resetPassword(user.id, { newPassword });
+      setNewPassword('');
+      actions.toast(`Password reset for ${user.name}. Their other sessions were signed out.`, 'success');
+      onClose();
+    } catch (err) {
+      setError(apiMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Reset password — ${user.name}`}
+      width={480}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={saving}>
+            {saving ? 'Resetting…' : 'Reset password'}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid-2">
+        <Field
+          label="New password"
+          span={2}
+          required
+          hint="Password will not be shown again. This signs the staff member out everywhere."
+        >
+          <TextInput
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="At least 10 characters"
+            autoComplete="new-password"
+          />
+        </Field>
+        {error && (
+          <p className="form-error" span={2} role="alert">
+            {error}
+          </p>
+        )}
       </div>
     </Modal>
   );

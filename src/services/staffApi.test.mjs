@@ -17,7 +17,22 @@ try {
   await staffApi.list({ role: 'field-executive', teamId: 't_north', status: 'Active', q: 'asha' });
   assert.match(calls.at(-1).url, /\/users\?role=field-executive&teamId=t_north&status=Active&q=asha$/);
 
-  console.log('staff API: 2 assertions passed');
+  await staffApi.create({
+    name: 'New Hire', email: 'hire@acme.example', roleId: 'field-executive',
+    teamId: 't_north', initialPassword: 'a-strong-password-1',
+  });
+  assert.match(calls.at(-1).url, /\/users$/);
+  assert.equal(calls.at(-1).options.method, 'POST');
+  const createdBody = JSON.parse(calls.at(-1).options.body);
+  assert.equal(createdBody.initialPassword, 'a-strong-password-1');
+
+  await staffApi.resetPassword('u-asha', { newPassword: 'a-new-password-2' });
+  assert.match(calls.at(-1).url, /\/users\/u-asha\/reset-password$/);
+  assert.equal(calls.at(-1).options.method, 'POST');
+  const resetBody = JSON.parse(calls.at(-1).options.body);
+  assert.equal(resetBody.newPassword, 'a-new-password-2');
+
+  console.log('staff API: 4 assertions passed');
 } finally {
   globalThis.fetch = originalFetch;
 }

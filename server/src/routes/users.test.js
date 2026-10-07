@@ -273,6 +273,170 @@ test('GET /api/v1/users (dev-super, DB set) honours role/q/status filters', asyn
   }
 });
 
+// ---------------------------------------------------------------------------
+// 3. Manual staff creation + admin reset (no DB required for gate checks)
+// ---------------------------------------------------------------------------
+
+test('POST /api/v1/users without auth returns 401', async () => {
+  const app = await newApp();
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/v1/users',
+    payload: { name: 'X', email: 'x@acme.example', roleId: 'field-executive', initialPassword: 'a-strong-password-1' },
+  });
+  assert.equal(res.statusCode, 401);
+  await app.close();
+});
+
+test('POST /api/v1/users with placeholder auth reaches RBAC gate', async () => {
+  // Placeholder bearer resolves u-asha (field-executive, staff.create='none')
+  // → 403 before the data layer is touched.
+  const app = await newApp();
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/v1/users',
+    headers: { authorization: bearer() },
+    payload: { name: 'X', email: 'x@acme.example', roleId: 'field-executive', initialPassword: 'a-strong-password-1' },
+  });
+  if (dbConfigured) {
+    // With DB, the placeholder token resolves u-asha → 403 (no create grant).
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.json().error.code, 'forbidden');
+  } else {
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.json().error.code, 'forbidden');
+  }
+  await app.close();
+});
+
+test('POST /api/v1/users/:id/reset-password with placeholder auth reaches RBAC gate', async () => {
+  const app = await newApp();
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/v1/users/u-asha/reset-password',
+    headers: { authorization: bearer() },
+    payload: { newPassword: 'a-brand-new-password-2' },
+  });
+  // u-asha holds staff.edit='own' — the coarse gate passes, then the real
+  // DB work would run. Without a DB that is a 503, never a 200.
+  if (dbConfigured) {
+    assert.ok([200, 403, 404].includes(res.statusCode), `unexpected ${res.statusCode}`);
+  } else {
+    assert.ok([403, 503].includes(res.statusCode), `unexpected ${res.statusCode}`);
+  }
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// 4. DB-integration: manual create + admin reset round-trip
+// ---------------------------------------------------------------------------
+
+test('POST /api/v1/users (dev-admin, DB set) creates and resets a synthetic user', async (t) => {
+  // Full round-trip over HTTP with exact-row cleanup: create → duplicate
+  // 409 → weak-password 400 → reset → reset-unknown 404 → delete rows.
+  // The password travels only in request bodies, never in responses.
+  if (skipIfNoDb(t)) return;
+  process.env.DEV_AUTH_ENABLED = 'true';
+  try {
+    const app = await newApp();
+    const suffix = `manual_${Date.now().toString(36)}`;
+    const email = `${suffix}@acme.example`;
+    const createdIds = [];
+    try {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/users',
+        headers: { authorization: 'Bearer dev-admin' },
+        payload: {
+          name: 'Manual Hire', email, roleId: 'field-executive',
+          teamId: 't_north', designation: 'Field Executive',
+          initialPassword: 'a-strong-manual-password-1',
+        },
+      });
+      assert.equal(created.statusCode, 200, created.body);
+      const body = created.json();
+      assert.ok(body.id, 'create returns the id');
+      assert.equal(body.email, email);
+      assert.equal(body.status, 'Active');
+      assert.ok(!created.body.includes('a-strong-manual-password-1'), 'the response never carries the password');
+      createdIds.push(body.id);
+
+      const duplicate = await app.inject({
+        method: 'POST',
+        url: '/api/v1/users',
+        headers: { authorization: 'Bearer dev-admin' },
+        payload: {
+          name: 'Manual Hire', email, roleId: 'field-executive',
+          initialPassword: 'another-strong-password-2',
+        },
+      });
+      assert.equal(duplicate.statusCode, 409);
+      assert.equal(duplicate.json().error.code, 'duplicate-email');
+
+      const weak = await app.inject({
+        method: 'POST',
+        url: '/api/v1/users',
+        headers: { authorization: 'Bearer dev-admin' },
+        payload: {
+          name: 'Weak Hire', email: `weak-${email}`, roleId: 'field-executive',
+          initialPassword: 'short',
+        },
+      });
+      assert.equal(weak.statusCode, 400);
+      assert.equal(weak.json().error.code, 'weak-password');
+
+      const reset = await app.inject({
+        method: 'POST',
+        url: `/api/v1/users/${body.id}/reset-password`,
+        headers: { authorization: 'Bearer dev-admin' },
+        payload: { newPassword: 'a-brand-new-manual-password-3' },
+      });
+      assert.equal(reset.statusCode, 200, reset.body);
+      assert.deepEqual(reset.json(), { ok: true, userId: body.id, sessionsRevoked: 0 });
+      assert.ok(!reset.body.includes('a-brand-new-manual-password-3'), 'the reset response never carries the password');
+
+      const unknown = await app.inject({
+        method: 'POST',
+        url: '/api/v1/users/u_missing/reset-password',
+        headers: { authorization: 'Bearer dev-admin' },
+        payload: { newPassword: 'a-brand-new-manual-password-3' },
+      });
+      assert.equal(unknown.statusCode, 404);
+    } finally {
+      const { query } = await import('../db/client.js');
+      for (const id of createdIds) {
+        await query('DELETE FROM users WHERE tenant_id = $1 AND id = $2', ['org_acme', id]);
+      }
+      await app.close();
+    }
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+  }
+});
+
+test('POST /api/v1/users (dev-field, DB set) is denied by staff:create', async (t) => {
+  // u-asha (field-executive) holds staff.create='none' → coarse 403.
+  if (skipIfNoDb(t)) return;
+  process.env.DEV_AUTH_ENABLED = 'true';
+  try {
+    const app = await newApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/users',
+      headers: { authorization: 'Bearer dev-field' },
+      payload: {
+        name: 'Denied', email: 'denied@acme.example', roleId: 'field-executive',
+        initialPassword: 'a-strong-manual-password-1',
+      },
+    });
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.json().error.code, 'forbidden');
+    await app.close();
+  } finally {
+    delete process.env.DEV_AUTH_ENABLED;
+  }
+});
+
 test.after(async () => {
   await closeDb();
 });

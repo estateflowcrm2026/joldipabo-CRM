@@ -36,6 +36,53 @@ table — no migration was required, and 012/013/014 were left untouched.
   invite/reset tokens, or `permission_matrix`. The SELECT list names its
   columns explicitly so a future secret column cannot leak by `SELECT *`.
 
+## Manual staff creation + admin password reset (no email)
+
+`POST /api/v1/users` creates a sign-in-capable user with an admin-typed
+initial password; `POST /api/v1/users/:id/reset-password` sets a new one.
+No email is sent in either path — the admin shares the password with the
+staff member out of band. This is a separate system from the invite flow
+(`POST /auth/invite` → emailed single-use link → `POST /auth/accept-invite`);
+the two share nothing except the `users` table.
+
+- Coarse gates: `staff:create` for creation, `staff:edit` for reset (403
+  when the matrix says `none`).
+- Creation body: `name`, `email` (required), `phone`, `roleId` (must be a
+  known system role), `teamId` (must exist in the caller's tenant),
+  `designation`, `status` (`Active` default; `Inactive`/`Suspended` allowed —
+  `Invited` is refused because that state belongs to the email flow),
+  `initialPassword` (required).
+- The password is validated against the existing policy (min 10 chars) and
+  hashed with Argon2id. It is never stored, never returned, and never
+  audited. A weak password is 400 `weak-password`; a duplicate
+  (tenant_id, email) is 409 `duplicate-email`.
+- Creation response: `{ id, email, status }` — a confirmation, not the
+  secret.
+- Reset body: `{ newPassword }`. The reset updates `password_hash` and
+  `password_changed_at`, clears `failed_login_count` / `locked_until`, and
+  revokes every session via the existing `refresh_sessions` table, so
+  whoever held the old password loses access immediately.
+- Reset response: `{ ok: true, userId, sessionsRevoked }` — confirmation
+  only.
+- Tenant scope: the new user inherits the actor's tenant; a reset target
+  outside the actor's tenant is a 404 (not a 403, so the caller learns
+  nothing about other tenants).
+- Super-admin protection: only a `super-admin` actor may create a
+  `super-admin` or reset one's password (403 `super-admin-protected`
+  otherwise) — the same rule the roles handler applies to system roles.
+- Audit: `created-user` (with `method: 'manual'`) and `admin-password-reset`
+  (with `reason: 'admin-reset'`), so an operator can tell manual
+  provisioning from the email flows. Neither row carries the password.
+- Frontend: the Staff Directory screen in live mode offers "Add staff"
+  (with an initial-password field labelled "Password will not be shown
+  again") and a per-card "Reset password" action. Success shows a
+  confirmation toast naming the account, never the password. Demo mode is
+  unchanged (seed roster, toast-only create modal, in-place edit modal).
+- Pending: there is no `force_password_change` column in the schema, so
+  the flow cannot flag "must change on next login". Documented here rather
+  than fixed with a broad migration; if the client wants it, add a new
+  numbered migration (001/002 are frozen) plus a login-time check.
+
 ## Frontend
 
 `src/services/staffApi.js` is the API module; `useAssignableStaff()`
@@ -62,20 +109,29 @@ Already live before this change (no work needed):
 | --- | --- |
 | `GET /api/v1/users` list | Real — scoped, filtered, paginated |
 | Listing assignment in live mode | Real — directory-backed pickers with loading/error/empty states |
-| User creation / invite | Real, unchanged — `POST /auth/invite` (`staff:create`) via `onboardingService.inviteUser`; no parallel system was built |
-| `GET /api/v1/users/:id`, `POST/PATCH/DELETE /users`, `POST /users/:id/restore` | Not implemented — still `NotImplemented`, per the auth spec's phase plan |
+| User creation / invite | Real, unchanged — `POST /auth/invite` (`staff:create`) via `onboardingService.inviteUser` |
+| Manual staff creation (`POST /users`) | Real — `staff:create`, Argon2id hash, no email; response is `{ id, email, status }` |
+| Admin password reset (`POST /users/:id/reset-password`) | Real — `staff:edit`, clears lockout, revokes sessions, tenant 404 for foreign rows |
+| `GET /api/v1/users/:id`, `PATCH/DELETE /users`, `POST /users/:id/restore` | Not implemented — still `NotImplemented`, per the auth spec's phase plan |
 | `GET /api/v1/teams` | Still `{ items: [], placeholder: true }` — the directory takes `teamId` as a free filter and resolves `teamName` via JOIN |
 | Phone visibility | Gap — phone is included for every viewer that passes the `staff:view` gate. There is no field-level grant in the matrix to key off, so a phone-hiding rule would be invented policy |
 | Test accounts | Dev-only script `server/scripts/seed-staff-test-users.js` (manager + 2 executives on different teams + telecaller; `DEMO_PASSWORD` from the environment, localhost + demo-tenant guards, idempotent). Never run against a shared database |
 
 ## Verification
 
-- `server/src/routes/users.test.js` — 5 pure validator unit tests + 4
-  no-DB route cases (401, 403 placeholder, 2× 400 invalid-enum) + 4
-  DB-integration scoping cases (all/team/own + filter narrowing),
-  read-only over the seed. No writes, no cleanup.
-- `src/services/staffApi.test.mjs` — URL assertions, wired into root
-  `npm test`.
+- `server/src/routes/users.test.js` — 5 pure validator unit tests + 7
+  no-DB route cases (401/403 gates, 2× 400 invalid-enum, 3× create/reset
+  gate checks) + 4 DB-integration scoping cases (all/team/own + filter
+  narrowing, read-only over the seed) + 2 DB-integration write cases
+  (create → duplicate → weak → reset → unknown-404 round-trip with exact
+  cleanup; denial by `staff:create: none`). Passwords travel only in
+  request bodies, never in responses.
+- `server/src/repositories/staffManagement.test.js` — 17 no-DB unit tests
+  over a fake pg client (validation, 403/404/409 codes, tenant scope,
+  super-admin guard, audit rows, session revocation, no plaintext in
+  responses or storage).
+- `src/services/staffApi.test.mjs` — URL/method/body assertions, wired into
+  root `npm test`.
 - `npm run verify:staff` (with `STAFF_VERIFY_WRITE=1`) — creates three
   synthetic users, asserts all/team/own visibility, filter narrowing,
   400s and 401 over HTTP, then deletes exactly its rows (audit events
